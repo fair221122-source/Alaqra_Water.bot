@@ -4,14 +4,13 @@ from datetime import datetime
 
 from telegram import (
     Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
 )
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     ConversationHandler,
     ContextTypes,
     filters,
@@ -63,8 +62,6 @@ def save_data(data):
 
 
 data = load_data()
-
-# ID المدير الأولي للتحقق
 INITIAL_ADMIN_ID = 986199874
 
 
@@ -88,496 +85,188 @@ def get_last_payment(serial: str):
 
 
 def generate_invoice_number():
-    # رقم فريد مبني على الوقت
     return int(datetime.now().timestamp())
 
 
 def build_client_statement(serial: str):
     readings = data["readings"].get(serial, [])
     payments = data["payments"].get(serial, [])
-
-    lines = []
-    lines.append("📄 كشف حساب المشترك")
-    lines.append(f"الرقم التسلسلي: {serial}")
-    lines.append("")
-
+    lines = ["📄 كشف حساب المشترك", f"الرقم التسلسلي: {serial}", ""]
     if not readings and not payments:
         lines.append("لا توجد بيانات قراءات أو دفعات حتى الآن.")
         return "\n".join(lines)
-
     lines.append("القراءات:")
-    if readings:
-        for r in readings:
-            lines.append(
-                f"- بتاريخ {r['date']}: قراءة من {r['prev']} إلى {r['curr']}، استهلاك {r['units']}، مبلغ {r['amount']} ريال"
-            )
-    else:
-        lines.append("- لا توجد قراءات مسجلة")
-
-    lines.append("")
-    lines.append("الدفعات:")
-    if payments:
-        for p in payments:
-            lines.append(f"- بتاريخ {p['date']}: سداد {p['amount']} ريال")
-    else:
-        lines.append("- لا توجد دفعات مسجلة")
-
+    for r in readings:
+        lines.append(f"- {r['date']}: من {r['prev']} إلى {r['curr']} ({r['amount']} ريال)")
+    lines.append("\nالدفعات:")
+    for p in payments:
+        lines.append(f"- {p['date']}: سداد {p['amount']} ريال")
     total_amount = sum(r["amount"] for r in readings)
     total_paid = sum(p["amount"] for p in payments)
-    balance = total_amount - total_paid
-
-    lines.append("")
-    lines.append(f"إجمالي المبالغ المستحقة: {total_amount} ريال")
-    lines.append(f"إجمالي المدفوع: {total_paid} ريال")
-    lines.append(f"الرصيد المتبقي: {balance} ريال")
-
+    lines.append(f"\nإجمالي المستحق: {total_amount}\nالمدفوع: {total_paid}\nالرصيد: {total_amount - total_paid}")
     return "\n".join(lines)
 
-
 def build_area_statement(area_name: str):
-    lines = []
-    lines.append(f"📍 كشف حساب منطقة: {area_name}")
-    lines.append("")
-
+    lines = [f"📍 كشف حساب منطقة: {area_name}", ""]
     found = False
     for serial, info in data["subscribers"].items():
         if info.get("area") == area_name:
             found = True
-            readings = data["readings"].get(serial, [])
-            payments = data["payments"].get(serial, [])
-            total_amount = sum(r["amount"] for r in readings)
-            total_paid = sum(p["amount"] for p in payments)
-            balance = total_amount - total_paid
-            lines.append(
-                f"مشترك: {info.get('name', 'غير معروف')} | تسلسلي: {serial} | مستحق: {total_amount} | مدفوع: {total_paid} | رصيد: {balance}"
-            )
-
-    if not found:
-        lines.append("لا توجد مشتركين في هذه المنطقة.")
-    return "\n".join(lines)
-
+            r_sum = sum(r["amount"] for r in data["readings"].get(serial, []))
+            p_sum = sum(p["amount"] for p in data["payments"].get(serial, []))
+            lines.append(f"👤 {info.get('name')}: رصيد {r_sum - p_sum}")
+    return "\n".join(lines) if found else "لا توجد بيانات لهذه المنطقة."
 
 def build_global_statement():
-    lines = []
-    lines.append("📋 كشف حساب رئيسي")
-    lines.append("")
-
-    if not data["subscribers"]:
-        lines.append("لا توجد بيانات مشتركين.")
-        return "\n".join(lines)
-
-    total_amount_all = 0
-    total_paid_all = 0
-
+    lines = ["📋 كشف حساب رئيسي", ""]
+    t_amt = t_paid = 0
     for serial, info in data["subscribers"].items():
-        readings = data["readings"].get(serial, [])
-        payments = data["payments"].get(serial, [])
-        total_amount = sum(r["amount"] for r in readings)
-        total_paid = sum(p["amount"] for p in payments)
-        balance = total_amount - total_paid
-        total_amount_all += total_amount
-        total_paid_all += total_paid
-        lines.append(
-            f"مشترك: {info.get('name', 'غير معروف')} | تسلسلي: {serial} | مستحق: {total_amount} | مدفوع: {total_paid} | رصيد: {balance}"
-        )
-
-    lines.append("")
-    lines.append(f"إجمالي المستحق على الجميع: {total_amount_all} ريال")
-    lines.append(f"إجمالي المدفوع من الجميع: {total_paid_all} ريال")
-    lines.append(f"إجمالي الرصيد المتبقي: {total_amount_all - total_paid_all} ريال")
-
+        r_sum = sum(r["amount"] for r in data["readings"].get(serial, []))
+        p_sum = sum(p["amount"] for p in data["payments"].get(serial, []))
+        t_amt += r_sum
+        t_paid += p_sum
+        lines.append(f"{info.get('name')}: مستحق {r_sum} | مدفوع {p_sum}")
+    lines.append(f"\nالإجمالي: مستحق {t_amt} | مدفوع {t_paid} | متبقي {t_amt - t_paid}")
     return "\n".join(lines)
-
 
 # ───────────── حالات المحادثة ─────────────
 
-CLIENT_ENTER_SERIAL, CLIENT_ENTER_SUB = range(2)
+(CLIENT_ENTER_SERIAL, CLIENT_ENTER_SUB, ADMIN_ENTER_ID, ADMIN_BROADCAST_AREA, 
+ ADMIN_BROADCAST_SINGLE, ADMIN_BROADCAST_MESSAGE, ADMIN_STAT_SINGLE, ADMIN_STAT_AREA,
+ ADMIN_ADD_READING_SERIAL, ADMIN_ADD_READING_VALUE, ADMIN_ADD_PAYMENT_SERIAL, 
+ ADMIN_ADD_PAYMENT_VALUE) = range(12)
 
-(
-    ADMIN_ENTER_ID,
-    ADMIN_BROADCAST_AREA,
-    ADMIN_BROADCAST_SINGLE,
-    ADMIN_BROADCAST_MESSAGE,
-    ADMIN_STAT_SINGLE,
-    ADMIN_STAT_AREA,
-) = range(2, 8)
+# ───────────── لوحات المفاتيح (المطلوبة) ─────────────
 
-# حالات القراءة والدفع للمدير
-(
-    ADMIN_ADD_READING_SERIAL,
-    ADMIN_ADD_READING_VALUE,
-    ADMIN_ADD_PAYMENT_SERIAL,
-    ADMIN_ADD_PAYMENT_VALUE,
-) = range(8, 12)
+def get_client_keyboard():
+    keyboard = [[KeyboardButton("📌 استعلام"), KeyboardButton("📄 كشف حساب")]]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+def get_admin_keyboard():
+    # توزيع 3 أزرار في الصف كما في الصورة
+    keyboard = [
+        [KeyboardButton("📊 كشف مشترك"), KeyboardButton("📍 كشف منطقة"), KeyboardButton("📋 كشف رئيسي")],
+        [KeyboardButton("📢 إرسال رسالة"), KeyboardButton("📥 تسجيل قراءة"), KeyboardButton("💰 تسجيل دفع")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# ───────────── العميل /start ─────────────
+# ───────────── الدوال ─────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if user_id in data["clients"]:
-        await show_client_menu(update, context)
+        await update.message.reply_text("مرحباً بك مجدداً، اختر من القائمة:", reply_markup=get_client_keyboard())
         return ConversationHandler.END
-
     await update.message.reply_text("مرحباً، الرجاء إدخال الرقم التسلسلي:")
     return CLIENT_ENTER_SERIAL
-
 
 async def client_enter_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["serial"] = update.message.text.strip()
     await update.message.reply_text("الرجاء إدخال رقم المشترك:")
     return CLIENT_ENTER_SUB
 
-
 async def client_enter_sub(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sub_number = update.message.text.strip()
     serial = context.user_data["serial"]
-    user_id = str(update.effective_user.id)
-
-    data["clients"][user_id] = {"serial": serial, "sub_number": sub_number}
+    data["clients"][str(update.effective_user.id)] = {"serial": serial, "sub_number": update.message.text.strip()}
     save_data(data)
-
-    await update.message.reply_text("تم الربط بنجاح.")
-    await show_client_menu(update, context)
+    await update.message.reply_text("تم الربط بنجاح.", reply_markup=get_client_keyboard())
     return ConversationHandler.END
 
-
-async def show_client_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("📌 استعلام", callback_data="client_inquiry")],
-        [InlineKeyboardButton("📄 كشف حساب", callback_data="client_statement")],
-    ]
-    markup = InlineKeyboardMarkup(keyboard)
-
-    if update.callback_query:
-        await update.callback_query.edit_message_text("اختر:", reply_markup=markup)
-    else:
-        await update.message.reply_text("اختر:", reply_markup=markup)
-
-
 async def client_inquiry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    user_id = str(q.from_user.id)
-
+    user_id = str(update.effective_user.id)
     client = data["clients"].get(user_id)
-    if not client:
-        await q.edit_message_text("لم يتم الربط بعد. أرسل /start للبدء.")
-        return
-
-    serial = client["serial"]
-    last_r = get_last_reading(serial)
-    last_p = get_last_payment(serial)
-
-    msg_lines = ["🔍 استعلام آخر وضع", f"الرقم التسلسلي: {serial}", ""]
-    if last_r:
-        msg_lines.append(
-            f"آخر قراءة: من {last_r['prev']} إلى {last_r['curr']}، استهلاك {last_r['units']}، مبلغ {last_r['amount']} ريال بتاريخ {last_r['date']}"
-        )
-    else:
-        msg_lines.append("لا توجد قراءات مسجلة.")
-
-    if last_p:
-        msg_lines.append(
-            f"آخر سداد: {last_p['amount']} ريال بتاريخ {last_p['date']}"
-        )
-    else:
-        msg_lines.append("لا توجد دفعات مسجلة.")
-
-    await q.edit_message_text("\n".join(msg_lines))
-    await show_client_menu(update, context)
-
+    if client:
+        serial = client["serial"]
+        last_r = get_last_reading(serial)
+        msg = f"🔍 آخر وضع لـ {serial}:\n" + (f"قراءة: {last_r['curr']} بتاريخ {last_r['date']}" if last_r else "لا توجد قراءات.")
+        await update.message.reply_text(msg)
 
 async def client_statement(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    user_id = str(q.from_user.id)
-
+    user_id = str(update.effective_user.id)
     client = data["clients"].get(user_id)
-    if not client:
-        await q.edit_message_text("لم يتم الربط بعد. أرسل /start للبدء.")
-        return
-
-    serial = client["serial"]
-    msg = build_client_statement(serial)
-    await q.edit_message_text(msg)
-    await show_client_menu(update, context)
-
-
-# ───────────── المدير /admin ─────────────
+    if client:
+        await update.message.reply_text(build_client_statement(client["serial"]))
 
 async def admin_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_id = data["admin"].get("admin_id")
-    user_id = update.effective_user.id
-
     if admin_id is None:
-        await update.message.reply_text("أدخل ID المدير للتحقق لأول مرة:")
+        await update.message.reply_text("أدخل ID المدير للتحقق:")
         return ADMIN_ENTER_ID
-
-    if user_id != admin_id:
-        await update.message.reply_text("ليس لديك صلاحية الدخول كمدير.")
+    if update.effective_user.id != admin_id:
+        await update.message.reply_text("ليس لديك صلاحية.")
         return ConversationHandler.END
-
-    await show_admin_menu(update, context)
+    await update.message.reply_text("لوحة المدير:", reply_markup=get_admin_keyboard())
     return ConversationHandler.END
-
 
 async def admin_enter_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        entered_id = int(update.message.text.strip())
-    except ValueError:
-        await update.message.reply_text("ID غير صالح، يجب أن يكون رقماً.")
-        return ADMIN_ENTER_ID
-
-    if entered_id != INITIAL_ADMIN_ID:
-        await update.message.reply_text("ID غير صحيح، لا يمكن تفعيل المدير.")
+    if update.message.text.strip() == str(INITIAL_ADMIN_ID):
+        data["admin"]["admin_id"] = update.effective_user.id
+        save_data(data)
+        await update.message.reply_text("تم التفعيل.", reply_markup=get_admin_keyboard())
         return ConversationHandler.END
+    return ADMIN_ENTER_ID
 
-    data["admin"]["admin_id"] = entered_id
-    save_data(data)
-    await update.message.reply_text("تم تفعيل المدير بنجاح.")
-    await show_admin_menu(update, context)
-    return ConversationHandler.END
+# ───────────── دوال عمليات المدير ─────────────
 
-
-async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [
-            InlineKeyboardButton("📊 كشف مشترك", callback_data="admin_stat_single"),
-            InlineKeyboardButton("📍 كشف منطقة", callback_data="admin_stat_area"),
-            InlineKeyboardButton("📋 كشف رئيسي", callback_data="admin_stat_all"),
-        ],
-        [
-            InlineKeyboardButton("📢 رسالة", callback_data="broadcast_menu"),
-            InlineKeyboardButton("📥 قراءة", callback_data="admin_add_reading"),
-            InlineKeyboardButton("💰 دفع", callback_data="admin_add_payment"),
-        ],
-        [
-            InlineKeyboardButton("⤴️ رجوع", callback_data="admin_back"),
-        ]
-    ]
-
-    markup = InlineKeyboardMarkup(keyboard)
-
-    if update.callback_query:
-        await update.callback_query.edit_message_text("لوحة المدير:", reply_markup=markup)
-    else:
-        await update.message.reply_text("لوحة المدير:", reply_markup=markup)
-
-
-# ───────────── كشف حساب المدير ─────────────
-
-async def admin_stat_single_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    await q.edit_message_text("أدخل الرقم التسلسلي للمشترك:")
+async def admin_stat_single_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("أدخل الرقم التسلسلي:")
     return ADMIN_STAT_SINGLE
 
-
-async def admin_stat_single_enter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    serial = update.message.text.strip()
-    msg = build_client_statement(serial)
-    await update.message.reply_text(msg)
+async def admin_stat_single_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(build_client_statement(update.message.text.strip()))
     return ConversationHandler.END
 
-
-async def admin_stat_area_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    await q.edit_message_text("أدخل اسم المنطقة:")
+async def admin_stat_area_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("أدخل اسم المنطقة:")
     return ADMIN_STAT_AREA
 
-
-async def admin_stat_area_enter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    area = update.message.text.strip()
-    msg = build_area_statement(area)
-    await update.message.reply_text(msg)
+async def admin_stat_area_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(build_area_statement(update.message.text.strip()))
     return ConversationHandler.END
 
+async def admin_stat_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(build_global_statement())
 
-async def admin_stat_all_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    msg = build_global_statement()
-    await q.edit_message_text(msg)
-
-
-# ───────────── الإرسال الجماعي / الفردي ─────────────
-
-async def broadcast_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    keyboard = [
-        [InlineKeyboardButton("📨 للجميع", callback_data="broadcast_all")],
-        [InlineKeyboardButton("📍 لمنطقة", callback_data="broadcast_area")],
-        [InlineKeyboardButton("👤 لمشترك", callback_data="broadcast_single")],
-    ]
-    await q.edit_message_text("اختر نوع الإرسال:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def broadcast_all_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    context.user_data["broadcast_type"] = "all"
-    await q.edit_message_text("أدخل نص الرسالة:")
-    return ADMIN_BROADCAST_MESSAGE
-
-
-async def broadcast_area_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    context.user_data["broadcast_type"] = "area"
-    await q.edit_message_text("أدخل اسم المنطقة:")
-    return ADMIN_BROADCAST_AREA
-
-
-async def broadcast_single_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    context.user_data["broadcast_type"] = "single"
-    await q.edit_message_text("أدخل الرقم التسلسلي للمشترك:")
-    return ADMIN_BROADCAST_SINGLE
-
-
-async def broadcast_area_enter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    area = update.message.text.strip()
-    context.user_data["area_name"] = area
-    await update.message.reply_text("أدخل نص الرسالة:")
-    return ADMIN_BROADCAST_MESSAGE
-
-
-async def broadcast_single_enter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    serial = update.message.text.strip()
-    context.user_data["single_serial"] = serial
-    await update.message.reply_text("أدخل نص الرسالة:")
-    return ADMIN_BROADCAST_MESSAGE
-
-
-async def broadcast_message_enter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message.text
-    btype = context.user_data.get("broadcast_type")
-
-    if btype == "all":
-        for tg_id in data["clients"].keys():
-            await update.get_bot().send_message(chat_id=int(tg_id), text=msg)
-
-    elif btype == "area":
-        area = context.user_data.get("area_name")
-        for serial, info in data["subscribers"].items():
-            if info.get("area") == area:
-                user_id = get_user_id_by_serial(serial)
-                if user_id:
-                    await update.get_bot().send_message(chat_id=user_id, text=msg)
-
-    elif btype == "single":
-        serial = context.user_data.get("single_serial")
-        user_id = get_user_id_by_serial(serial)
-        if user_id:
-            await update.get_bot().send_message(chat_id=user_id, text=msg)
-
-    await update.message.reply_text("تم إرسال الرسالة.")
-    return ConversationHandler.END
-
-
-# ───────────── قراءة ودفع للمدير ─────────────
-
-async def admin_add_reading_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    await q.edit_message_text("أدخل الرقم التسلسلي للمشترك:")
+async def admin_add_reading_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("أدخل التسلسلي:")
     return ADMIN_ADD_READING_SERIAL
 
-
 async def admin_add_reading_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    serial = update.message.text.strip()
-    context.user_data["reading_serial"] = serial
-    await update.message.reply_text("أدخل القراءة الحالية:")
+    context.user_data["r_serial"] = update.message.text.strip()
+    await update.message.reply_text("أدخل القراءة:")
     return ADMIN_ADD_READING_VALUE
 
-
 async def admin_add_reading_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    serial = context.user_data["r_serial"]
     curr = int(update.message.text.strip())
-    serial = context.user_data["reading_serial"]
-
-    last = get_last_reading(serial)
-    prev = last["curr"] if last else 0
-
-    units = curr - prev
-    amount = units * data["settings"]["price_per_unit"]
-
-    entry = {
-        "prev": prev,
-        "curr": curr,
-        "units": units,
-        "amount": amount,
-        "date": datetime.now().strftime("%Y-%m-%d"),
-    }
-
-    data["readings"].setdefault(serial, []).append(entry)
+    prev = get_last_reading(serial)["curr"] if get_last_reading(serial) else 0
+    data["readings"].setdefault(serial, []).append({
+        "prev": prev, "curr": curr, "units": curr-prev, 
+        "amount": (curr-prev)*data["settings"]["price_per_unit"], 
+        "date": datetime.now().strftime("%Y-%m-%d")
+    })
     save_data(data)
-
-    invoice_no = generate_invoice_number()
-    user_id = get_user_id_by_serial(serial)
-
-    if user_id:
-        msg = (
-            "السلام عليكم ورحمة الله وبركاته\n"
-            f"عزيزي المشترك تم إصدار فاتورة استهلاك مياة رقم ({invoice_no})\n"
-            "الرجاء سرعة سداد المبلغ المستحق لنستطيع الوفاء بإلتزاماتنا\n"
-            "شاكرين تعاونكم\n"
-            "إدارة المشروع"
-        )
-        await update.get_bot().send_message(chat_id=user_id, text=msg)
-
-    await update.message.reply_text("✔️ تم تسجيل القراءة وإرسال الفاتورة.")
+    await update.message.reply_text("تم التسجيل.")
     return ConversationHandler.END
 
-
-async def admin_add_payment_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    await q.edit_message_text("أدخل الرقم التسلسلي للمشترك:")
+async def admin_add_payment_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("أدخل التسلسلي:")
     return ADMIN_ADD_PAYMENT_SERIAL
 
-
 async def admin_add_payment_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    serial = update.message.text.strip()
-    context.user_data["payment_serial"] = serial
-    await update.message.reply_text("أدخل مبلغ الدفع:")
+    context.user_data["p_serial"] = update.message.text.strip()
+    await update.message.reply_text("أدخل المبلغ:")
     return ADMIN_ADD_PAYMENT_VALUE
 
-
 async def admin_add_payment_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    amount = int(update.message.text.strip())
-    serial = context.user_data["payment_serial"]
-
-    entry = {
-        "amount": amount,
-        "date": datetime.now().strftime("%Y-%m-%d"),
-    }
-
-    data["payments"].setdefault(serial, []).append(entry)
+    serial = context.user_data["p_serial"]
+    data["payments"].setdefault(serial, []).append({
+        "amount": int(update.message.text.strip()), 
+        "date": datetime.now().strftime("%Y-%m-%d")
+    })
     save_data(data)
-
-    receipt_no = generate_invoice_number()
-    user_id = get_user_id_by_serial(serial)
-
-    if user_id:
-        msg = (
-            f"سند قبض رقم ({receipt_no})\n"
-            f"تم سداد مبلغ وقدره ({amount}) ريال يمني مقابل فاتورة استهلاك مياة"
-        )
-        await update.get_bot().send_message(chat_id=user_id, text=msg)
-
-    await update.message.reply_text("✔️ تم تسجيل الدفع وإرسال السند.")
+    await update.message.reply_text("تم تسجيل السداد.")
     return ConversationHandler.END
-
-
-async def admin_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    await show_admin_menu(update, context)
-
 
 # ───────────── MAIN ─────────────
 
@@ -587,12 +276,8 @@ def main():
     client_conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            CLIENT_ENTER_SERIAL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, client_enter_serial)
-            ],
-            CLIENT_ENTER_SUB: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, client_enter_sub)
-            ],
+            CLIENT_ENTER_SERIAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, client_enter_serial)],
+            CLIENT_ENTER_SUB: [MessageHandler(filters.TEXT & ~filters.COMMAND, client_enter_sub)],
         },
         fallbacks=[],
     )
@@ -600,98 +285,30 @@ def main():
     admin_conv = ConversationHandler(
         entry_points=[CommandHandler("admin", admin_entry)],
         states={
-            ADMIN_ENTER_ID: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_enter_id)
-            ],
-            ADMIN_STAT_SINGLE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_stat_single_enter)
-            ],
-            ADMIN_STAT_AREA: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_stat_area_enter)
-            ],
-            ADMIN_BROADCAST_AREA: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_area_enter)
-            ],
-            ADMIN_BROADCAST_SINGLE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_single_enter)
-            ],
-            ADMIN_BROADCAST_MESSAGE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_message_enter)
-            ],
-            ADMIN_ADD_READING_SERIAL: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND, admin_add_reading_serial
-                )
-            ],
-            ADMIN_ADD_READING_VALUE: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND, admin_add_reading_value
-                )
-            ],
-            ADMIN_ADD_PAYMENT_SERIAL: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND, admin_add_payment_serial
-                )
-            ],
-            ADMIN_ADD_PAYMENT_VALUE: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND, admin_add_payment_value
-                )
-            ],
+            ADMIN_ENTER_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_enter_id)],
+            ADMIN_STAT_SINGLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_stat_single_done)],
+            ADMIN_STAT_AREA: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_stat_area_done)],
+            ADMIN_ADD_READING_SERIAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_reading_serial)],
+            ADMIN_ADD_READING_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_reading_value)],
+            ADMIN_ADD_PAYMENT_SERIAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_payment_serial)],
+            ADMIN_ADD_PAYMENT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_payment_value)],
         },
         fallbacks=[],
     )
 
     app.add_handler(client_conv)
     app.add_handler(admin_conv)
-
-    # أزرار العميل
-    app.add_handler(
-        CallbackQueryHandler(client_inquiry, pattern="^client_inquiry$")
-    )
-    app.add_handler(
-        CallbackQueryHandler(client_statement, pattern="^client_statement$")
-    )
-
-    # أزرار كشف الحساب للمدير
-    app.add_handler(
-        CallbackQueryHandler(admin_stat_single_cb, pattern="^admin_stat_single$")
-    )
-    app.add_handler(
-        CallbackQueryHandler(admin_stat_area_cb, pattern="^admin_stat_area$")
-    )
-    app.add_handler(
-        CallbackQueryHandler(admin_stat_all_cb, pattern="^admin_stat_all$")
-    )
-
-    # أزرار الإرسال
-    app.add_handler(
-        CallbackQueryHandler(broadcast_menu, pattern="^broadcast_menu$")
-    )
-    app.add_handler(
-        CallbackQueryHandler(broadcast_all_cb, pattern="^broadcast_all$")
-    )
-    app.add_handler(
-        CallbackQueryHandler(broadcast_area_cb, pattern="^broadcast_area$")
-    )
-    app.add_handler(
-        CallbackQueryHandler(broadcast_single_cb, pattern="^broadcast_single$")
-    )
-
-    # أزرار القراءة والدفع والرجوع
-    app.add_handler(
-        CallbackQueryHandler(admin_add_reading_cb, pattern="^admin_add_reading$")
-    )
-    app.add_handler(
-        CallbackQueryHandler(admin_add_payment_cb, pattern="^admin_add_payment$")
-    )
-    app.add_handler(
-        CallbackQueryHandler(admin_back, pattern="^admin_back$")
-    )
+    
+    # ربط أزرار النص بالوظائف
+    app.add_handler(MessageHandler(filters.Regex("^📌 استعلام$"), client_inquiry))
+    app.add_handler(MessageHandler(filters.Regex("^📄 كشف حساب$"), client_statement))
+    app.add_handler(MessageHandler(filters.Regex("^📊 كشف مشترك$"), admin_stat_single_start))
+    app.add_handler(MessageHandler(filters.Regex("^📍 كشف منطقة$"), admin_stat_area_start))
+    app.add_handler(MessageHandler(filters.Regex("^📋 كشف رئيسي$"), admin_stat_all))
+    app.add_handler(MessageHandler(filters.Regex("^📥 تسجيل قراءة$"), admin_add_reading_start))
+    app.add_handler(MessageHandler(filters.Regex("^💰 تسجيل دفع$"), admin_add_payment_start))
 
     app.run_polling()
 
-
 if __name__ == "__main__":
     main()
-
