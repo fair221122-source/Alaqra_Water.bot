@@ -65,7 +65,7 @@ def save_data(data):
 data = load_data()
 
 # ID المدير الأولي للتحقق
-INITIAL_ADMIN_ID = 713597162
+INITIAL_ADMIN_ID = 986199874
 
 
 # ───────────── دوال مساعدة ─────────────
@@ -343,19 +343,20 @@ async def admin_enter_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
-            InlineKeyboardButton("📊 كشف حساب مشترك", callback_data="admin_stat_single"),
-            InlineKeyboardButton("📍 كشف حساب منطقة", callback_data="admin_stat_area"),
+            InlineKeyboardButton("📊 كشف مشترك", callback_data="admin_stat_single"),
+            InlineKeyboardButton("📍 كشف منطقة", callback_data="admin_stat_area"),
+            InlineKeyboardButton("📋 كشف رئيسي", callback_data="admin_stat_all"),
         ],
         [
-            InlineKeyboardButton("📋 كشف حساب رئيسي", callback_data="admin_stat_all"),
-            InlineKeyboardButton("📢 إرسال رسالة", callback_data="broadcast_menu"),
-        ],
-        [
+            InlineKeyboardButton("📢 رسالة", callback_data="broadcast_menu"),
             InlineKeyboardButton("📥 قراءة", callback_data="admin_add_reading"),
             InlineKeyboardButton("💰 دفع", callback_data="admin_add_payment"),
-            InlineKeyboardButton("⤴️ رجوع", callback_data="admin_back"),
         ],
+        [
+            InlineKeyboardButton("⤴️ رجوع", callback_data="admin_back"),
+        ]
     ]
+
     markup = InlineKeyboardMarkup(keyboard)
 
     if update.callback_query:
