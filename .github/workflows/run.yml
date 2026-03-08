@@ -1,11 +1,11 @@
 name: Run Telegram Bot
 
+on:
+  workflow_dispatch:
+
 concurrency:
   group: bot-run
   cancel-in-progress: true
-
-on:
-  workflow_dispatch:
 
 jobs:
   run-bot:
