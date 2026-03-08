@@ -18,7 +18,7 @@ from telegram.ext import (
 )
 
 BOT_TOKEN = "8090667485:AAGCgIlZPEB069W_bhpIr0HBdp20GpfCCPI"
-DATA_FILE = "alaqra_Water.bot"
+DATA_FILE = "data.json"
 
 # ───────────── بيانات / JSON ─────────────
 
@@ -30,15 +30,32 @@ def load_data():
                 "project_name": "مشروع مياة قرية بيت الأقرع",
                 "price_per_unit": 250
             },
-            "clients": {},      # telegram_user_id → {serial, sub_number}
-            "subscribers": {},  # serial → {name, area}
-            "readings": {},     # serial → [ {prev, curr, units, amount, date} ]
-            "payments": {}      # serial → [ {amount, date} ]
+            "clients": {},
+            "subscribers": {},
+            "readings": {},
+            "payments": {}
         }
         save_data(data)
         return data
+
     with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            # إصلاح تلقائي إذا كان الملف فارغ أو تالف
+            data = {
+                "admin": {"admin_id": None},
+                "settings": {
+                    "project_name": "مشروع مياة قرية بيت الأقرع",
+                    "price_per_unit": 250
+                },
+                "clients": {},
+                "subscribers": {},
+                "readings": {},
+                "payments": {}
+            }
+            save_data(data)
+            return data
 
 
 def save_data(data):
@@ -478,4 +495,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
