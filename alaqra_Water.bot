@@ -28,12 +28,12 @@ def load_data():
             "admin": {"admin_id": None},
             "settings": {
                 "project_name": "مشروع مياة قرية بيت الأقرع",
-                "price_per_unit": 250
+                "price_per_unit": 250,
             },
             "clients": {},
             "subscribers": {},
             "readings": {},
-            "payments": {}
+            "payments": {},
         }
         save_data(data)
         return data
@@ -42,17 +42,16 @@ def load_data():
         try:
             return json.load(f)
         except json.JSONDecodeError:
-            # إصلاح تلقائي إذا كان الملف فارغ أو تالف
             data = {
                 "admin": {"admin_id": None},
                 "settings": {
                     "project_name": "مشروع مياة قرية بيت الأقرع",
-                    "price_per_unit": 250
+                    "price_per_unit": 250,
                 },
                 "clients": {},
                 "subscribers": {},
                 "readings": {},
-                "payments": {}
+                "payments": {},
             }
             save_data(data)
             return data
@@ -65,9 +64,11 @@ def save_data(data):
 
 data = load_data()
 
-# هذا الـ ID الذي ستضعه أنت برمجياً لأول مرة للتحقق من المدير
-INITIAL_ADMIN_ID = 713597162  # عدّله إلى ID المدير الحقيقي
+# ID المدير الأولي للتحقق
+INITIAL_ADMIN_ID = 713597162
 
+
+# ───────────── دوال مساعدة ─────────────
 
 def get_user_id_by_serial(serial: str):
     for tg_id, info in data["clients"].items():
@@ -84,6 +85,11 @@ def get_last_reading(serial: str):
 def get_last_payment(serial: str):
     payments = data["payments"].get(serial, [])
     return payments[-1] if payments else None
+
+
+def generate_invoice_number():
+    # رقم فريد مبني على الوقت
+    return int(datetime.now().timestamp())
 
 
 def build_client_statement(serial: str):
@@ -186,9 +192,24 @@ def build_global_statement():
 # ───────────── حالات المحادثة ─────────────
 
 CLIENT_ENTER_SERIAL, CLIENT_ENTER_SUB = range(2)
-ADMIN_ENTER_ID, ADMIN_BROADCAST_AREA, ADMIN_BROADCAST_SINGLE, ADMIN_BROADCAST_MESSAGE, ADMIN_STAT_SINGLE, ADMIN_STAT_AREA = range(
-    2, 8
-)
+
+(
+    ADMIN_ENTER_ID,
+    ADMIN_BROADCAST_AREA,
+    ADMIN_BROADCAST_SINGLE,
+    ADMIN_BROADCAST_MESSAGE,
+    ADMIN_STAT_SINGLE,
+    ADMIN_STAT_AREA,
+) = range(2, 8)
+
+# حالات القراءة والدفع للمدير
+(
+    ADMIN_ADD_READING_SERIAL,
+    ADMIN_ADD_READING_VALUE,
+    ADMIN_ADD_PAYMENT_SERIAL,
+    ADMIN_ADD_PAYMENT_VALUE,
+) = range(8, 12)
+
 
 # ───────────── العميل /start ─────────────
 
@@ -321,10 +342,19 @@ async def admin_enter_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("📊 كشف حساب مشترك", callback_data="admin_stat_single")],
-        [InlineKeyboardButton("📍 كشف حساب منطقة", callback_data="admin_stat_area")],
-        [InlineKeyboardButton("📋 كشف حساب رئيسي", callback_data="admin_stat_all")],
-        [InlineKeyboardButton("📢 إرسال رسالة", callback_data="broadcast_menu")],
+        [
+            InlineKeyboardButton("📊 كشف حساب مشترك", callback_data="admin_stat_single"),
+            InlineKeyboardButton("📍 كشف حساب منطقة", callback_data="admin_stat_area"),
+        ],
+        [
+            InlineKeyboardButton("📋 كشف حساب رئيسي", callback_data="admin_stat_all"),
+            InlineKeyboardButton("📢 إرسال رسالة", callback_data="broadcast_menu"),
+        ],
+        [
+            InlineKeyboardButton("📥 قراءة", callback_data="admin_add_reading"),
+            InlineKeyboardButton("💰 دفع", callback_data="admin_add_payment"),
+            InlineKeyboardButton("⤴️ رجوع", callback_data="admin_back"),
+        ],
     ]
     markup = InlineKeyboardMarkup(keyboard)
 
@@ -448,6 +478,106 @@ async def broadcast_message_enter(update: Update, context: ContextTypes.DEFAULT_
     return ConversationHandler.END
 
 
+# ───────────── قراءة ودفع للمدير ─────────────
+
+async def admin_add_reading_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    await q.edit_message_text("أدخل الرقم التسلسلي للمشترك:")
+    return ADMIN_ADD_READING_SERIAL
+
+
+async def admin_add_reading_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    serial = update.message.text.strip()
+    context.user_data["reading_serial"] = serial
+    await update.message.reply_text("أدخل القراءة الحالية:")
+    return ADMIN_ADD_READING_VALUE
+
+
+async def admin_add_reading_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    curr = int(update.message.text.strip())
+    serial = context.user_data["reading_serial"]
+
+    last = get_last_reading(serial)
+    prev = last["curr"] if last else 0
+
+    units = curr - prev
+    amount = units * data["settings"]["price_per_unit"]
+
+    entry = {
+        "prev": prev,
+        "curr": curr,
+        "units": units,
+        "amount": amount,
+        "date": datetime.now().strftime("%Y-%m-%d"),
+    }
+
+    data["readings"].setdefault(serial, []).append(entry)
+    save_data(data)
+
+    invoice_no = generate_invoice_number()
+    user_id = get_user_id_by_serial(serial)
+
+    if user_id:
+        msg = (
+            "السلام عليكم ورحمة الله وبركاته\n"
+            f"عزيزي المشترك تم إصدار فاتورة استهلاك مياة رقم ({invoice_no})\n"
+            "الرجاء سرعة سداد المبلغ المستحق لنستطيع الوفاء بإلتزاماتنا\n"
+            "شاكرين تعاونكم\n"
+            "إدارة المشروع"
+        )
+        await update.get_bot().send_message(chat_id=user_id, text=msg)
+
+    await update.message.reply_text("✔️ تم تسجيل القراءة وإرسال الفاتورة.")
+    return ConversationHandler.END
+
+
+async def admin_add_payment_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    await q.edit_message_text("أدخل الرقم التسلسلي للمشترك:")
+    return ADMIN_ADD_PAYMENT_SERIAL
+
+
+async def admin_add_payment_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    serial = update.message.text.strip()
+    context.user_data["payment_serial"] = serial
+    await update.message.reply_text("أدخل مبلغ الدفع:")
+    return ADMIN_ADD_PAYMENT_VALUE
+
+
+async def admin_add_payment_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    amount = int(update.message.text.strip())
+    serial = context.user_data["payment_serial"]
+
+    entry = {
+        "amount": amount,
+        "date": datetime.now().strftime("%Y-%m-%d"),
+    }
+
+    data["payments"].setdefault(serial, []).append(entry)
+    save_data(data)
+
+    receipt_no = generate_invoice_number()
+    user_id = get_user_id_by_serial(serial)
+
+    if user_id:
+        msg = (
+            f"سند قبض رقم ({receipt_no})\n"
+            f"تم سداد مبلغ وقدره ({amount}) ريال يمني مقابل فاتورة استهلاك مياة"
+        )
+        await update.get_bot().send_message(chat_id=user_id, text=msg)
+
+    await update.message.reply_text("✔️ تم تسجيل الدفع وإرسال السند.")
+    return ConversationHandler.END
+
+
+async def admin_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    await show_admin_menu(update, context)
+
+
 # ───────────── MAIN ─────────────
 
 def main():
@@ -456,8 +586,12 @@ def main():
     client_conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            CLIENT_ENTER_SERIAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, client_enter_serial)],
-            CLIENT_ENTER_SUB: [MessageHandler(filters.TEXT & ~filters.COMMAND, client_enter_sub)],
+            CLIENT_ENTER_SERIAL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, client_enter_serial)
+            ],
+            CLIENT_ENTER_SUB: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, client_enter_sub)
+            ],
         },
         fallbacks=[],
     )
@@ -465,12 +599,44 @@ def main():
     admin_conv = ConversationHandler(
         entry_points=[CommandHandler("admin", admin_entry)],
         states={
-            ADMIN_ENTER_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_enter_id)],
-            ADMIN_STAT_SINGLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_stat_single_enter)],
-            ADMIN_STAT_AREA: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_stat_area_enter)],
-            ADMIN_BROADCAST_AREA: [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_area_enter)],
-            ADMIN_BROADCAST_SINGLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_single_enter)],
-            ADMIN_BROADCAST_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_message_enter)],
+            ADMIN_ENTER_ID: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_enter_id)
+            ],
+            ADMIN_STAT_SINGLE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_stat_single_enter)
+            ],
+            ADMIN_STAT_AREA: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_stat_area_enter)
+            ],
+            ADMIN_BROADCAST_AREA: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_area_enter)
+            ],
+            ADMIN_BROADCAST_SINGLE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_single_enter)
+            ],
+            ADMIN_BROADCAST_MESSAGE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_message_enter)
+            ],
+            ADMIN_ADD_READING_SERIAL: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, admin_add_reading_serial
+                )
+            ],
+            ADMIN_ADD_READING_VALUE: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, admin_add_reading_value
+                )
+            ],
+            ADMIN_ADD_PAYMENT_SERIAL: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, admin_add_payment_serial
+                )
+            ],
+            ADMIN_ADD_PAYMENT_VALUE: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, admin_add_payment_value
+                )
+            ],
         },
         fallbacks=[],
     )
@@ -478,20 +644,53 @@ def main():
     app.add_handler(client_conv)
     app.add_handler(admin_conv)
 
-    app.add_handler(CallbackQueryHandler(client_inquiry, pattern="^client_inquiry$"))
-    app.add_handler(CallbackQueryHandler(client_statement, pattern="^client_statement$"))
+    # أزرار العميل
+    app.add_handler(
+        CallbackQueryHandler(client_inquiry, pattern="^client_inquiry$")
+    )
+    app.add_handler(
+        CallbackQueryHandler(client_statement, pattern="^client_statement$")
+    )
 
-    app.add_handler(CallbackQueryHandler(admin_stat_single_cb, pattern="^admin_stat_single$"))
-    app.add_handler(CallbackQueryHandler(admin_stat_area_cb, pattern="^admin_stat_area$"))
-    app.add_handler(CallbackQueryHandler(admin_stat_all_cb, pattern="^admin_stat_all$"))
+    # أزرار كشف الحساب للمدير
+    app.add_handler(
+        CallbackQueryHandler(admin_stat_single_cb, pattern="^admin_stat_single$")
+    )
+    app.add_handler(
+        CallbackQueryHandler(admin_stat_area_cb, pattern="^admin_stat_area$")
+    )
+    app.add_handler(
+        CallbackQueryHandler(admin_stat_all_cb, pattern="^admin_stat_all$")
+    )
 
-    app.add_handler(CallbackQueryHandler(broadcast_menu, pattern="^broadcast_menu$"))
-    app.add_handler(CallbackQueryHandler(broadcast_all_cb, pattern="^broadcast_all$"))
-    app.add_handler(CallbackQueryHandler(broadcast_area_cb, pattern="^broadcast_area$"))
-    app.add_handler(CallbackQueryHandler(broadcast_single_cb, pattern="^broadcast_single$"))
+    # أزرار الإرسال
+    app.add_handler(
+        CallbackQueryHandler(broadcast_menu, pattern="^broadcast_menu$")
+    )
+    app.add_handler(
+        CallbackQueryHandler(broadcast_all_cb, pattern="^broadcast_all$")
+    )
+    app.add_handler(
+        CallbackQueryHandler(broadcast_area_cb, pattern="^broadcast_area$")
+    )
+    app.add_handler(
+        CallbackQueryHandler(broadcast_single_cb, pattern="^broadcast_single$")
+    )
+
+    # أزرار القراءة والدفع والرجوع
+    app.add_handler(
+        CallbackQueryHandler(admin_add_reading_cb, pattern="^admin_add_reading$")
+    )
+    app.add_handler(
+        CallbackQueryHandler(admin_add_payment_cb, pattern="^admin_add_payment$")
+    )
+    app.add_handler(
+        CallbackQueryHandler(admin_back, pattern="^admin_back$")
+    )
 
     app.run_polling()
 
 
 if __name__ == "__main__":
     main()
+
