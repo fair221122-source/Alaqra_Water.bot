@@ -1,2 +1,2 @@
-# Alaqra_Water.bot
+# Alaqra_Water.py
 مشروع مياة قرية بيت الأقرع
