@@ -26,4 +26,4 @@ jobs:
 
     - name: Run bot
       run: |
-        python alaqra_Water.bot
+        python alaqra_Water.py
