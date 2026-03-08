@@ -1,6 +1,5 @@
 name: Run Telegram Bot
 
-# 🔥 هذا الجزء هو الذي يمنع تشغيل أكثر من عملية
 concurrency:
   group: bot-run
   cancel-in-progress: true
