@@ -914,17 +914,20 @@ def main():
 
     app.add_handler(client_conv)
     app.add_handler(admin_conv)
+# أزرار العميل
+if last_r:
+    lines.append(
+        f"آخر قراءة: {last_r['curr']} بتاريخ {last_r['date']} | مبلغ {last_r['amount']}"
+    )
+else:
+    lines.append("لا توجد قراءات مسجلة.")
 
-    # أزرار العميل
- {last_r['date']} | مبلغ {last_r['amount']}")
-    else:
-        lines.append("لا توجد قراءات مسجلة.")
-    if last_p:
-        lines.append(f"آخر سداد: {last_p['amount']} بتاريخ {last_p['date']}")
-    else:
-        lines.append("لا توجد دفعات مسجلة.")
-
-    await update.message.reply_text("\n".join(lines), reply_markup=get_client_keyboard())
+if last_p:
+    lines.append(
+        f"آخر سداد: {last_p['amount']} بتاريخ {last_p['date']}"
+    )
+else:
+    lines.append("لا توجد دفعات مسجلة.")    await update.message.reply_text("\n".join(lines), reply_markup=get_client_keyboard())
 
 
 async def client_period_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
