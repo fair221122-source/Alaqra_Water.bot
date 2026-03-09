@@ -1194,13 +1194,15 @@ async def admin_msg_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.get_bot().send_message(chat_id=tg_id, text=text)
         await update.message.reply_text(f"تم إرسال الرسالة لمشتركي منطقة {area}.", reply_markup=get_admin_keyboard())
 
-    else:  # مشترك
-        serial = context.user_data["msg_serial"]
-        tg_id = get_user_id_by_serial(serial_markup=get_admin_keyboard())
-        else:
-            await update.message.reply_text("لم يتم العثور على هذا المشترك.", reply_markup=get_admin_keyboard())
+else:  # مشترك
+    serial = context.user_data["msg_serial"]
+    tg_id = get_user_id_by_serial(serial)
+    if tg_id:
+        await update.get_bot().send_message(chat_id=tg_id, text=text)
+    else:
+        await update.message.reply_text("لم يتم العثور على هذا المشترك.", reply_markup=get_admin_keyboard())
 
-    return ConversationHandler.END
+return ConversationHandler.END
 
 
 # إضافة مشترك جديد
