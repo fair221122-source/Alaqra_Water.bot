@@ -927,8 +927,8 @@ if last_p:
         f"آخر سداد: {last_p['amount']} بتاريخ {last_p['date']}"
     )
 else:
-    lines.append("لا توجد دفعات مسجلة.")    await update.message.reply_text("\n".join(lines), reply_markup=get_client_keyboard())
-
+    lines.append("لا توجد دفعات مسجلة.")
+await update.message.reply_text("\n".join(lines), reply_markup=get_client_keyboard())
 
 async def client_period_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
