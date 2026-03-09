@@ -324,7 +324,7 @@ def get_next_serial():
     ADMIN_EDIT_NEW_NAME,
     ADMIN_EDIT_NEW_METER,
     ADMIN_EDIT_NEW_AREA,
-) = range(2, 2 + 22)
+) = range(2, 2 + 23)
 
 CLIENT_PERIOD_FROM, CLIENT_PERIOD_TO = range(50, 52)
 
