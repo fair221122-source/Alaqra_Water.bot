@@ -16,30 +16,19 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table
 from reportlab.lib.styles import getSampleStyleSheet
 
 
-# ==================================
+# =========================
 # ضع التوكن هنا
-# ==================================
+# =========================
 BOT_TOKEN = "8090667485:AAGCgIlZPEB069W_bhpIr0HBdp20GpfCCPI"
 
-# ==================================
+# =========================
 # ضع رقم المدير هنا
-# ==================================
+# =========================
 ADMIN_ID = 986199874
 
 
 DATA_FILE = "data.json"
 UNIT_PRICE = 500
-
-
-AREAS = [
-    "الحمراء",
-    "الجبوبة",
-    "عرض الجبل",
-    "شمضات",
-    "حضي",
-    "الوادي",
-    "بيع مباشر"
-]
 
 
 ASK_SERIAL = 1
@@ -77,7 +66,7 @@ def admin_keyboard():
 
     kb = [
         ["💰 تسجيل دفع", "📥 تسجيل قراءة"],
-        ["➕ مشترك جديد"],
+        ["➕ مشترك جديد"]
     ]
 
     return ReplyKeyboardMarkup(kb, resize_keyboard=True)
@@ -143,6 +132,10 @@ async def link_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return ConversationHandler.END
 
+
+# ========================
+# تسجيل قراءة
+# ========================
 
 async def read_start(update, context):
 
@@ -218,6 +211,10 @@ async def read_value(update, context):
     return ConversationHandler.END
 
 
+# ========================
+# تسجيل دفع
+# ========================
+
 async def pay_start(update, context):
 
     await update.message.reply_text("أدخل الرقم التسلسلي")
@@ -285,6 +282,10 @@ async def pay_amount(update, context):
     return ConversationHandler.END
 
 
+# ========================
+# استعلام المشترك
+# ========================
+
 async def subscriber_status(update, context):
 
     data = load_data()
@@ -310,11 +311,13 @@ async def subscriber_status(update, context):
             return
 
 
+# ========================
+# كشف حساب PDF
+# ========================
+
 async def statement_start(update, context):
 
-    await update.message.reply_text(
-        "أدخل الفترة من (يوم/شهر/سنة)"
-    )
+    await update.message.reply_text("أدخل الفترة من (يوم/شهر/سنة)")
 
     return FROM_DATE
 
@@ -349,21 +352,11 @@ async def statement_to(update, context):
             story = []
 
             story.append(Paragraph("كشف حساب المشترك", styles['Title']))
-
             story.append(Spacer(1, 20))
 
             story.append(Paragraph(f"الاسم: {sub['name']}", styles['Normal']))
             story.append(Paragraph(f"المنطقة: {sub['area']}", styles['Normal']))
             story.append(Paragraph(f"رقم العداد: {sub['meter']}", styles['Normal']))
-
-            story.append(Spacer(1, 20))
-
-            story.append(
-                Paragraph(
-                    f"الفترة من {from_date} إلى {to_date}",
-                    styles['Normal']
-                )
-            )
 
             story.append(Spacer(1, 20))
 
@@ -373,19 +366,12 @@ async def statement_to(update, context):
             r_table = [["التاريخ", "الاستهلاك", "القيمة"]]
 
             for r in readings:
-                r_table.append([
-                    r["date"],
-                    r["consumption"],
-                    r["amount"]
-                ])
+                r_table.append([r["date"], r["consumption"], r["amount"]])
 
             p_table = [["التاريخ", "المبلغ"]]
 
             for p in payments:
-                p_table.append([
-                    p["date"],
-                    p["amount"]
-                ])
+                p_table.append([p["date"], p["amount"]])
 
             story.append(Paragraph("القراءات", styles['Heading2']))
             story.append(Table(r_table))
@@ -408,12 +394,14 @@ async def statement_to(update, context):
 
             pdf.build(story)
 
-            await update.message.reply_document(
-                open(file, "rb")
-            )
+            await update.message.reply_document(open(file, "rb"))
 
             return ConversationHandler.END
 
+
+# ========================
+# إضافة مشترك
+# ========================
 
 async def new_sub(update, context):
 
@@ -476,9 +464,7 @@ def main():
     start_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            ASK_SERIAL: [
-                MessageHandler(filters.TEXT, link_account)
-            ]
+            ASK_SERIAL: [MessageHandler(filters.TEXT, link_account)]
         },
         fallbacks=[]
     )
@@ -486,15 +472,11 @@ def main():
 
     read_handler = ConversationHandler(
         entry_points=[
-            MessageHandler(filters.TEXT("📥 تسجيل قراءة"), read_start)
+            MessageHandler(filters.TEXT & filters.Regex("^📥 تسجيل قراءة$"), read_start)
         ],
         states={
-            READ_ID: [
-                MessageHandler(filters.TEXT, read_id)
-            ],
-            READ_VALUE: [
-                MessageHandler(filters.TEXT, read_value)
-            ]
+            READ_ID: [MessageHandler(filters.TEXT, read_id)],
+            READ_VALUE: [MessageHandler(filters.TEXT, read_value)]
         },
         fallbacks=[]
     )
@@ -502,15 +484,11 @@ def main():
 
     pay_handler = ConversationHandler(
         entry_points=[
-            MessageHandler(filters.TEXT("💰 تسجيل دفع"), pay_start)
+            MessageHandler(filters.TEXT & filters.Regex("^💰 تسجيل دفع$"), pay_start)
         ],
         states={
-            PAY_ID: [
-                MessageHandler(filters.TEXT, pay_id)
-            ],
-            PAY_AMOUNT: [
-                MessageHandler(filters.TEXT, pay_amount)
-            ]
+            PAY_ID: [MessageHandler(filters.TEXT, pay_id)],
+            PAY_AMOUNT: [MessageHandler(filters.TEXT, pay_amount)]
         },
         fallbacks=[]
     )
@@ -518,15 +496,11 @@ def main():
 
     statement_handler = ConversationHandler(
         entry_points=[
-            MessageHandler(filters.TEXT("📄 كشف حساب"), statement_start)
+            MessageHandler(filters.TEXT & filters.Regex("^📄 كشف حساب$"), statement_start)
         ],
         states={
-            FROM_DATE: [
-                MessageHandler(filters.TEXT, statement_from)
-            ],
-            TO_DATE: [
-                MessageHandler(filters.TEXT, statement_to)
-            ]
+            FROM_DATE: [MessageHandler(filters.TEXT, statement_from)],
+            TO_DATE: [MessageHandler(filters.TEXT, statement_to)]
         },
         fallbacks=[]
     )
@@ -534,18 +508,12 @@ def main():
 
     new_handler = ConversationHandler(
         entry_points=[
-            MessageHandler(filters.TEXT("➕ مشترك جديد"), new_sub)
+            MessageHandler(filters.TEXT & filters.Regex("^➕ مشترك جديد$"), new_sub)
         ],
         states={
-            NEW_NAME: [
-                MessageHandler(filters.TEXT, new_name)
-            ],
-            NEW_AREA: [
-                MessageHandler(filters.TEXT, new_area)
-            ],
-            NEW_METER: [
-                MessageHandler(filters.TEXT, new_meter)
-            ]
+            NEW_NAME: [MessageHandler(filters.TEXT, new_name)],
+            NEW_AREA: [MessageHandler(filters.TEXT, new_area)],
+            NEW_METER: [MessageHandler(filters.TEXT, new_meter)]
         },
         fallbacks=[]
     )
@@ -559,10 +527,11 @@ def main():
 
     app.add_handler(
         MessageHandler(
-            filters.TEXT("📌 استعلام"),
+            filters.TEXT & filters.Regex("^📌 استعلام$"),
             subscriber_status
         )
     )
+
 
     app.run_polling()
 
