@@ -927,7 +927,7 @@ def main():
     lines.append(
         f"آخر قراءة: {last_r['curr']} بتاريخ {last_r['date']} | مبلغ {last_r['amount']}"
     )
-else:
+
     lines.append("لا توجد قراءات مسجلة.")
 
 if last_p:
