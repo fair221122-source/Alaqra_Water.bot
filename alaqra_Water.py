@@ -402,11 +402,16 @@ async def client_enter_sub(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def client_inquiry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # تعريف المتغيرات قبل أي استخدام
+    last_r = {"curr": 0, "amount": 0, "date": "—"}
+    last_p = {"amount": 0, "date": "—"}
+
     user_id = str(update.effective_user.id)
     client = data["clients"].get(user_id)
     if not client:
         await update.message.reply_text("لم يتم الربط بعد. أرسل /start", reply_markup=get_client_keyboard())
         return
+
     serial = client["serial"]
     last_r = get_last_reading(serial)
     last_p = get_last_payment(serial)
