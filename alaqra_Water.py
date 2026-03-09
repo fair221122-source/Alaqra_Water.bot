@@ -11,8 +11,8 @@ from telegram.ext import (
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table
 from reportlab.lib.styles import getSampleStyleSheet
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("USER_ID", "123456789"))
+BOT_TOKEN = os.getenv("8090667485:AAGCgIlZPEB069W_bhpIr0HBdp20GpfCCPI")
+ADMIN_ID = int(os.getenv("USER_ID", "986199874"))
 
 DATA_FILE = "data.json"
 UNIT_PRICE = 500
