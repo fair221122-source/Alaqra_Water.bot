@@ -1,167 +1,1904 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import logging
+import os
 import sqlite3
-import io
-import random
-import string
-from datetime import datetime
-from telegram import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, Update
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, filters, 
-    ConversationHandler, ContextTypes, CallbackQueryHandler
+from datetime import datetime, date
+
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    InputFile,
 )
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
+)
 
-# --- الإعدادات ---
-# ضع هنا الـ ID الخاص بحسابك (تحصل عليه من بوت @userinfobot)
-ADMIN_USER_ID = "986199874"  
-ANNUAL_PASSWORD = "root" 
-UNIT_PRICE = 500         
+# ============ إعدادات أساسية ============
+TOKEN = os.getenv("BOT_TOKEN", "8090667485:AAGCgIlZPEB069W_bhpIr0HBdp20GpfCCPI")
 
-# --- قاعدة البيانات ---
+DB_PATH = "water_project.db"
+UNIT_PRICE_DEFAULT = 500  # ريال يمني
+ANNUAL_CLOSE_PASSWORD = os.getenv("ANNUAL_CLOSE_PASSWORD", "09092009")
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+
+# ============ قاعدة البيانات ============
 def init_db():
-    conn = sqlite3.connect('water_system.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users 
-                 (serial_id TEXT PRIMARY KEY, meter_num TEXT, name TEXT, area TEXT, 
-                  chat_id INTEGER, prev_reading REAL DEFAULT 0, balance REAL DEFAULT 0)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS transactions 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, meter_num TEXT, type TEXT, 
-                  value REAL, reading REAL, date TEXT)''')
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """
+    )
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS areas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL
+        )
+    """
+    )
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS subscribers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            serial INTEGER UNIQUE NOT NULL,
+            account_no TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            area_id INTEGER,
+            chat_id INTEGER,
+            created_at TEXT,
+            FOREIGN KEY(area_id) REFERENCES areas(id)
+        )
+    """
+    )
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS readings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subscriber_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            prev_read INTEGER NOT NULL,
+            curr_read INTEGER NOT NULL,
+            units INTEGER NOT NULL,
+            unit_price INTEGER NOT NULL,
+            amount INTEGER NOT NULL,
+            FOREIGN KEY(subscriber_id) REFERENCES subscribers(id)
+        )
+    """
+    )
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subscriber_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            amount INTEGER NOT NULL,
+            FOREIGN KEY(subscriber_id) REFERENCES subscribers(id)
+        )
+    """
+    )
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS messages_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            msg_type TEXT NOT NULL,
+            target TEXT NOT NULL,
+            text TEXT NOT NULL,
+            date TEXT NOT NULL
+        )
+    """
+    )
+
+    # حفظ سعر الوحدة الافتراضي إن لم يكن موجوداً
+    c.execute("SELECT value FROM settings WHERE key='unit_price'")
+    if not c.fetchone():
+        c.execute(
+            "INSERT INTO settings(key, value) VALUES('unit_price', ?)",
+            (str(UNIT_PRICE_DEFAULT),),
+        )
+
     conn.commit()
     conn.close()
 
-# --- حالات الحوار ---
-(AUTH_STEP, MAIN_MENU, ADD_NAME, ADD_METER, ADD_AREA, 
- REG_READ_NUM, REG_READ_VAL, CONFIRM_READ, 
- REG_PAY_NUM, REG_PAY_VAL, CONFIRM_PAY,
- USER_LINK, USER_STMT_DATE, ANNUAL_AUTH) = range(14)
 
-# --- لوحات المفاتيح ---
-ADMIN_KB = [
-    ['إرسال رسالة 📩', 'تسجيل قراءة 📥', 'تسجيل دفع 💰'],
-    ['كشف مشترك 👤', 'كشف منطقة 📍', 'كشف رئيسي 📊'],
-    ['تعديل مشترك ✏️', 'مشترك جديد ➕', 'إغلاق سنوي 🔒']
-]
+def get_conn():
+    return sqlite3.connect(DB_PATH)
 
-USER_KB = [['استعلام 🔍', 'كشف حساب 📑']]
 
-# --- الوظائف ---
+def get_unit_price():
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT value FROM settings WHERE key='unit_price'")
+    row = c.fetchone()
+    conn.close()
+    return int(row[0]) if row else UNIT_PRICE_DEFAULT
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    conn = sqlite3.connect('water_system.db')
-    user = conn.execute("SELECT name FROM users WHERE chat_id=?", (user_id,)).fetchone()
+
+def set_admin_user_id(user_id: int):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "INSERT OR REPLACE INTO settings(key, value) VALUES('admin_user_id', ?)",
+        (str(user_id),),
+    )
+    conn.commit()
     conn.close()
 
-    if user:
-        await update.message.reply_text(f"مرحباً بك مجدداً {user[0]}", 
-                                       reply_markup=ReplyKeyboardMarkup(USER_KB, resize_keyboard=True))
-        return MAIN_MENU
 
-    if context.user_data.get('asked_once'):
-        await update.message.reply_text("يرجى إدخال (الرقم التسلسلي-رقم المشترك) للربط:")
-        return USER_LINK
-    
-    context.user_data['asked_once'] = True
-    await update.message.reply_text("مرحباً بك. إذا كنت المدير أرسل (admin)، وللمشترك أرسل /start مرة ثانية.")
-    return AUTH_STEP
+def get_admin_user_id():
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT value FROM settings WHERE key='admin_user_id'")
+    row = c.fetchone()
+    conn.close()
+    return int(row[0]) if row else None
 
-async def auth_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if text == "admin":
-        await update.message.reply_text("أدخل USER_ID المدير:")
-        return AUTH_STEP
-    elif text == str(ADMIN_USER_ID):
-        await update.message.reply_text("لوحة المدير جاهزة:", 
-                                       reply_markup=ReplyKeyboardMarkup(ADMIN_KB, resize_keyboard=True))
-        return MAIN_MENU
-    return AUTH_STEP
 
-async def user_linking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def get_next_serial():
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT MAX(serial) FROM subscribers")
+    row = c.fetchone()
+    max_serial = row[0] if row and row[0] is not None else 0
+    conn.close()
+    return max_serial + 1
+
+
+def get_or_create_area(name: str):
+    name = name.strip()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT id FROM areas WHERE name=?", (name,))
+    row = c.fetchone()
+    if row:
+        area_id = row[0]
+    else:
+        c.execute("INSERT INTO areas(name) VALUES(?)", (name,))
+        area_id = c.lastrowid
+        conn.commit()
+    conn.close()
+    return area_id
+
+
+def get_all_areas():
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT id, name FROM areas ORDER BY name")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def find_subscriber_by_serial_and_account(serial: int, account_no: str):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
+        FROM subscribers s
+        LEFT JOIN areas a ON s.area_id = a.id
+        WHERE s.serial=? AND s.account_no=?
+    """,
+        (serial, account_no),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def find_subscriber_by_account(account_no: str):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
+        FROM subscribers s
+        LEFT JOIN areas a ON s.area_id = a.id
+        WHERE s.account_no=?
+    """,
+        (account_no,),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def find_subscriber_by_id(sub_id: int):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
+        FROM subscribers s
+        LEFT JOIN areas a ON s.area_id = a.id
+        WHERE s.id=?
+    """,
+        (sub_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def find_subscriber_by_chat(chat_id: int):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
+        FROM subscribers s
+        LEFT JOIN areas a ON s.area_id = a.id
+        WHERE s.chat_id=?
+    """,
+        (chat_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def link_subscriber_chat(serial: int, account_no: str, chat_id: int):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "UPDATE subscribers SET chat_id=? WHERE serial=? AND account_no=?",
+        (chat_id, serial, account_no),
+    )
+    conn.commit()
+    conn.close()
+
+
+def create_subscriber(serial: int, account_no: str, name: str, area_name: str):
+    area_id = get_or_create_area(area_name)
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO subscribers(serial, account_no, name, area_id, chat_id, created_at)
+        VALUES(?,?,?,?,?,?)
+    """,
+        (serial, account_no, name, area_id, None, datetime.utcnow().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_subscriber(sub_id: int, name: str = None, area_name: str = None):
+    conn = get_conn()
+    c = conn.cursor()
+    if name and area_name:
+        area_id = get_or_create_area(area_name)
+        c.execute(
+            "UPDATE subscribers SET name=?, area_id=? WHERE id=?",
+            (name, area_id, sub_id),
+        )
+    elif name:
+        c.execute("UPDATE subscribers SET name=? WHERE id=?", (name, sub_id))
+    elif area_name:
+        area_id = get_or_create_area(area_name)
+        c.execute("UPDATE subscribers SET area_id=? WHERE id=?", (area_id, sub_id))
+    conn.commit()
+    conn.close()
+
+
+def get_last_reading(subscriber_id: int):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT prev_read, curr_read, units, unit_price, amount, date
+        FROM readings
+        WHERE subscriber_id=?
+        ORDER BY id DESC
+        LIMIT 1
+    """,
+        (subscriber_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def add_reading(subscriber_id: int, curr_read: int):
+    unit_price = get_unit_price()
+    last = get_last_reading(subscriber_id)
+    prev_read = last[1] if last else 0
+    units = max(0, curr_read - prev_read)
+    amount = units * unit_price
+
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO readings(subscriber_id, date, prev_read, curr_read, units, unit_price, amount)
+        VALUES(?,?,?,?,?,?,?)
+    """,
+        (
+            subscriber_id,
+            datetime.utcnow().isoformat(),
+            prev_read,
+            curr_read,
+            units,
+            unit_price,
+            amount,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return prev_read, units, unit_price, amount
+
+
+def add_payment(subscriber_id: int, amount: int):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO payments(subscriber_id, date, amount)
+        VALUES(?,?,?)
+    """,
+        (subscriber_id, datetime.utcnow().isoformat(), amount),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_subscriber_summary(subscriber_id: int):
+    conn = get_conn()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        SELECT SUM(amount) FROM readings WHERE subscriber_id=?
+    """,
+        (subscriber_id,),
+    )
+    total_consumption_amount = c.fetchone()[0] or 0
+
+    c.execute(
+        """
+        SELECT SUM(amount) FROM payments WHERE subscriber_id=?
+    """,
+        (subscriber_id,),
+    )
+    total_payments = c.fetchone()[0] or 0
+
+    balance = total_consumption_amount - total_payments
+
+    c.execute(
+        """
+        SELECT prev_read, curr_read, units, unit_price, amount, date
+        FROM readings
+        WHERE subscriber_id=?
+        ORDER BY id DESC
+        LIMIT 1
+    """,
+        (subscriber_id,),
+    )
+    last_read = c.fetchone()
+
+    conn.close()
+    return {
+        "total_consumption_amount": total_consumption_amount,
+        "total_payments": total_payments,
+        "balance": balance,
+        "last_read": last_read,
+    }
+
+
+def get_subscriber_statement(subscriber_id: int, from_date: date, to_date: date):
+    conn = get_conn()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        SELECT date, prev_read, curr_read, units, unit_price, amount
+        FROM readings
+        WHERE subscriber_id=? AND date BETWEEN ? AND ?
+        ORDER BY date
+    """,
+        (
+            subscriber_id,
+            from_date.isoformat(),
+            (datetime.combine(to_date, datetime.max.time())).isoformat(),
+        ),
+    )
+    readings = c.fetchall()
+
+    c.execute(
+        """
+        SELECT date, amount
+        FROM payments
+        WHERE subscriber_id=? AND date BETWEEN ? AND ?
+        ORDER BY date
+    """,
+        (
+            subscriber_id,
+            from_date.isoformat(),
+            (datetime.combine(to_date, datetime.max.time())).isoformat(),
+        ),
+    )
+    payments = c.fetchall()
+
+    conn.close()
+    return readings, payments
+
+
+def get_area_summary(area_id: int, from_date: date, to_date: date):
+    conn = get_conn()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        SELECT id FROM subscribers WHERE area_id=?
+    """,
+        (area_id,),
+    )
+    subs = [row[0] for row in c.fetchall()]
+
+    total_consumption = 0
+    total_payments = 0
+
+    for sid in subs:
+        c.execute(
+            """
+            SELECT SUM(amount) FROM readings
+            WHERE subscriber_id=? AND date BETWEEN ? AND ?
+        """,
+            (
+                sid,
+                from_date.isoformat(),
+                (datetime.combine(to_date, datetime.max.time())).isoformat(),
+            ),
+        )
+        total_consumption += c.fetchone()[0] or 0
+
+        c.execute(
+            """
+            SELECT SUM(amount) FROM payments
+            WHERE subscriber_id=? AND date BETWEEN ? AND ?
+        """,
+            (
+                sid,
+                from_date.isoformat(),
+                (datetime.combine(to_date, datetime.max.time())).isoformat(),
+            ),
+        )
+        total_payments += c.fetchone()[0] or 0
+
+    conn.close()
+    return total_consumption, total_payments, total_consumption - total_payments
+
+
+def get_global_summary(from_date: date, to_date: date):
+    conn = get_conn()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        SELECT SUM(amount) FROM readings
+        WHERE date BETWEEN ? AND ?
+    """,
+        (
+            from_date.isoformat(),
+            (datetime.combine(to_date, datetime.max.time())).isoformat(),
+        ),
+    )
+    total_consumption = c.fetchone()[0] or 0
+
+    c.execute(
+        """
+        SELECT SUM(amount) FROM payments
+        WHERE date BETWEEN ? AND ?
+    """,
+        (
+            from_date.isoformat(),
+            (datetime.combine(to_date, datetime.max.time())).isoformat(),
+        ),
+    )
+    total_payments = c.fetchone()[0] or 0
+
+    conn.close()
+    return total_consumption, total_payments, total_consumption - total_payments
+
+
+def log_message(msg_type: str, target: str, text: str):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO messages_log(msg_type, target, text, date)
+        VALUES(?,?,?,?)
+    """,
+        (msg_type, target, text, datetime.utcnow().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+# ============ توليد ملفات PDF بسيطة ============
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+
+
+def generate_statement_pdf(
+    filename: str,
+    subscriber,
+    from_date: date,
+    to_date: date,
+    readings,
+    payments,
+):
+    c = canvas.Canvas(filename, pagesize=A4)
+    width, height = A4
+    y = height - 50
+
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(50, y, "كشف حساب مشترك")
+    y -= 30
+
+    c.setFont("Helvetica", 11)
+    c.drawString(50, y, f"الاسم: {subscriber[3]}")
+    y -= 20
+    c.drawString(50, y, f"الرقم التسلسلي: {subscriber[1]}")
+    y -= 20
+    c.drawString(50, y, f"رقم المشترك: {subscriber[2]}")
+    y -= 20
+    c.drawString(50, y, f"المنطقة: {subscriber[6] or '-'}")
+    y -= 20
+    c.drawString(50, y, f"الفترة: من {from_date} إلى {to_date}")
+    y -= 30
+
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, "القراءات:")
+    y -= 20
+    c.setFont("Helvetica", 9)
+    for r in readings:
+        line = f"تاريخ: {r[0][:10]} | سابقة: {r[1]} | حالية: {r[2]} | وحدات: {r[3]} | سعر: {r[4]} | مبلغ: {r[5]}"
+        c.drawString(50, y, line)
+        y -= 15
+        if y < 80:
+            c.showPage()
+            y = height - 50
+            c.setFont("Helvetica", 9)
+
+    y -= 20
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, "المدفوعات:")
+    y -= 20
+    c.setFont("Helvetica", 9)
+    for p in payments:
+        line = f"تاريخ: {p[0][:10]} | مبلغ: {p[1]}"
+        c.drawString(50, y, line)
+        y -= 15
+        if y < 80:
+            c.showPage()
+            y = height - 50
+            c.setFont("Helvetica", 9)
+
+    c.showPage()
+    c.save()
+
+
+def generate_area_or_global_pdf(
+    filename: str,
+    title: str,
+    from_date: date,
+    to_date: date,
+    total_consumption: int,
+    total_payments: int,
+    balance: int,
+):
+    c = canvas.Canvas(filename, pagesize=A4)
+    width, height = A4
+    y = height - 50
+
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(50, y, title)
+    y -= 30
+
+    c.setFont("Helvetica", 11)
+    c.drawString(50, y, f"الفترة: من {from_date} إلى {to_date}")
+    y -= 30
+
+    c.drawString(50, y, f"إجمالي الاستهلاك (مبلغ): {total_consumption}")
+    y -= 20
+    c.drawString(50, y, f"إجمالي المدفوع: {total_payments}")
+    y -= 20
+    c.drawString(50, y, f"إجمالي المتأخرات: {balance}")
+    y -= 20
+
+    c.showPage()
+    c.save()
+
+
+def generate_annual_pdf(filename: str):
+    today = date.today()
+    from_date = date(today.year, 1, 1)
+    to_date = date(today.year, 12, 31)
+    total_consumption, total_payments, balance = get_global_summary(
+        from_date, to_date
+    )
+    generate_area_or_global_pdf(
+        filename,
+        f"تقرير سنوي شامل لسنة {today.year}",
+        from_date,
+        to_date,
+        total_consumption,
+        total_payments,
+        balance,
+    )
+
+
+# ============ لوحات المفاتيح ============
+def admin_keyboard():
+    keyboard = [
+        ["مشترك جديد", "تعديل مشترك"],
+        ["تسجيل قراءة", "تسجيل دفع"],
+        ["كشف مشترك", "كشف منطقة"],
+        ["كشف رئيسي", "إرسال رسالة"],
+        ["إغلاق سنوي"],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def subscriber_keyboard():
+    keyboard = [["استعلام", "كشف حساب"]]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+# ============ حالات المستخدم ============
+# سنستخدم context.user_data لتخزين الحالة
+STATE_KEY = "state"
+
+# حالات عامة
+STATE_NONE = "NONE"
+
+# إعداد المدير
+STATE_ADMIN_WAIT_USER_ID = "ADMIN_WAIT_USER_ID"
+
+# ربط المشترك
+STATE_SUB_LINK_WAIT_SERIAL = "SUB_LINK_WAIT_SERIAL"
+STATE_SUB_LINK_WAIT_ACCOUNT = "SUB_LINK_WAIT_ACCOUNT"
+
+# مشترك جديد
+STATE_ADMIN_NEW_SUB_NAME = "ADMIN_NEW_SUB_NAME"
+STATE_ADMIN_NEW_SUB_ACCOUNT = "ADMIN_NEW_SUB_ACCOUNT"
+STATE_ADMIN_NEW_SUB_AREA = "ADMIN_NEW_SUB_AREA"
+
+# تعديل مشترك
+STATE_ADMIN_EDIT_SUB_WAIT_ACCOUNT = "ADMIN_EDIT_SUB_WAIT_ACCOUNT"
+STATE_ADMIN_EDIT_SUB_CHOICE = "ADMIN_EDIT_SUB_CHOICE"
+STATE_ADMIN_EDIT_SUB_NEW_NAME = "ADMIN_EDIT_SUB_NEW_NAME"
+STATE_ADMIN_EDIT_SUB_NEW_AREA = "ADMIN_EDIT_SUB_NEW_AREA"
+
+# تسجيل قراءة
+STATE_ADMIN_READ_WAIT_ACCOUNT = "ADMIN_READ_WAIT_ACCOUNT"
+STATE_ADMIN_READ_WAIT_VALUE = "ADMIN_READ_WAIT_VALUE"
+STATE_ADMIN_READ_CONFIRM = "ADMIN_READ_CONFIRM"
+
+# تسجيل دفع
+STATE_ADMIN_PAY_WAIT_ACCOUNT = "ADMIN_PAY_WAIT_ACCOUNT"
+STATE_ADMIN_PAY_WAIT_AMOUNT = "ADMIN_PAY_WAIT_AMOUNT"
+STATE_ADMIN_PAY_CONFIRM = "ADMIN_PAY_CONFIRM"
+
+# كشف مشترك
+STATE_ADMIN_INQ_WAIT_ACCOUNT = "ADMIN_INQ_WAIT_ACCOUNT"
+
+# كشف منطقة
+STATE_ADMIN_AREA_CHOOSE = "ADMIN_AREA_CHOOSE"
+STATE_ADMIN_AREA_WAIT_FROM = "ADMIN_AREA_WAIT_FROM"
+STATE_ADMIN_AREA_WAIT_TO = "ADMIN_AREA_WAIT_TO"
+
+# كشف رئيسي
+STATE_ADMIN_MAIN_WAIT_FROM = "ADMIN_MAIN_WAIT_FROM"
+STATE_ADMIN_MAIN_WAIT_TO = "ADMIN_MAIN_WAIT_TO"
+
+# إرسال رسالة
+STATE_ADMIN_MSG_TYPE = "ADMIN_MSG_TYPE"
+STATE_ADMIN_MSG_AREA_CHOOSE = "ADMIN_MSG_AREA_CHOOSE"
+STATE_ADMIN_MSG_SUB_WAIT = "ADMIN_MSG_SUB_WAIT"
+STATE_ADMIN_MSG_TEXT = "ADMIN_MSG_TEXT"
+
+# كشف حساب مشترك (من جهة المشترك)
+STATE_SUB_STATEMENT_WAIT_FROM = "SUB_STATEMENT_WAIT_FROM"
+STATE_SUB_STATEMENT_WAIT_TO = "SUB_STATEMENT_WAIT_TO"
+
+# كشف حساب مشترك (من جهة المدير)
+STATE_ADMIN_SUB_STATEMENT_WAIT_ACCOUNT = "ADMIN_SUB_STATEMENT_WAIT_ACCOUNT"
+STATE_ADMIN_SUB_STATEMENT_WAIT_FROM = "ADMIN_SUB_STATEMENT_WAIT_FROM"
+STATE_ADMIN_SUB_STATEMENT_WAIT_TO = "ADMIN_SUB_STATEMENT_WAIT_TO"
+
+# إغلاق سنوي
+STATE_ADMIN_ANNUAL_CONFIRM = "ADMIN_ANNUAL_CONFIRM"
+STATE_ADMIN_ANNUAL_PASSWORD = "ADMIN_ANNUAL_PASSWORD"
+
+
+# ============ أدوات مساعدة ============
+def is_admin(update: Update) -> bool:
+    admin_id = get_admin_user_id()
+    if not admin_id:
+        return False
+    return update.effective_user and update.effective_user.id == admin_id
+
+
+def parse_date_str(text: str):
+    # صيغة: يوم/شهر/سنة
     try:
-        serial, meter = update.message.text.split('-')
-        conn = sqlite3.connect('water_system.db')
-        c = conn.cursor()
-        user = c.execute("SELECT name FROM users WHERE serial_id=? AND meter_num=?", (serial, meter)).fetchone()
-        if user:
-            c.execute("UPDATE users SET chat_id=? WHERE meter_num=?", (update.effective_user.id, meter))
-            conn.commit()
-            await update.message.reply_text(f"تم الربط بنجاح! أهلاً بك {user[0]}", 
-                                           reply_markup=ReplyKeyboardMarkup(USER_KB, resize_keyboard=True))
+        parts = text.strip().split("/")
+        if len(parts) != 3:
+            return None
+        d, m, y = map(int, parts)
+        return date(y, m, d)
+    except Exception:
+        return None
+
+
+def format_subscriber_info(sub):
+    # sub: (id, serial, account_no, name, area_id, chat_id, area_name)
+    return (
+        f"الرقم التسلسلي: {sub[1]}\n"
+        f"رقم المشترك: {sub[2]}\n"
+        f"الاسم: {sub[3]}\n"
+        f"المنطقة: {sub[6] or '-'}\n"
+    )
+
+
+def format_subscriber_status(sub_id: int):
+    sub = find_subscriber_by_id(sub_id)
+    if not sub:
+        return "لم يتم العثور على المشترك."
+    summary = get_subscriber_summary(sub_id)
+    last = summary["last_read"]
+    text = format_subscriber_info(sub)
+    text += "\n"
+    if last:
+        text += (
+            f"آخر قراءة بتاريخ: {last[5][:10]}\n"
+            f"القراءة السابقة: {last[0]}\n"
+            f"القراءة الحالية: {last[1]}\n"
+            f"فارق القراءات (وحدات): {last[2]}\n"
+            f"سعر الوحدة: {last[3]}\n"
+            f"قيمة الاستهلاك الأخير: {last[4]}\n"
+        )
+    else:
+        text += "لا توجد قراءات مسجلة بعد.\n"
+    text += "\n"
+    text += f"إجمالي الاستهلاك (مبلغ): {summary['total_consumption_amount']}\n"
+    text += f"إجمالي المدفوع: {summary['total_payments']}\n"
+    text += f"إجمالي المتأخرات: {summary['balance']}\n"
+    return text
+
+
+# ============ الأوامر الأساسية ============
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_data = context.user_data
+    state = user_data.get(STATE_KEY, STATE_NONE)
+
+    # إذا لم يتم تعيين مدير بعد، يمكن للمدير أن يكتب /admin بعد /start
+    admin_id = get_admin_user_id()
+
+    # إذا كان المستخدم مشتركاً مرتبطاً
+    sub = find_subscriber_by_chat(update.effective_chat.id)
+    if sub:
+        await update.message.reply_text(
+            "مرحباً بك في حساب المشترك.\n"
+            "يمكنك استخدام الأزرار أدناه.",
+            reply_markup=subscriber_keyboard(),
+        )
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # إذا لم يكن مشتركاً ولا مديراً
+    if state == STATE_NONE:
+        # أول مرة /start
+        user_data["start_count"] = user_data.get("start_count", 0) + 1
+        if user_data["start_count"] == 1:
+            msg = (
+                "مرحباً بك.\n"
+                "إن كنت المدير فاكتب الأمر: admin\n"
+                "وإن كنت مشتركاً فأعد إرسال /start مرة أخرى بعد استلام الرقم التسلسلي ورقم المشترك من المدير."
+            )
+            await update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
+            return
         else:
-            await update.message.reply_text("بيانات غير صحيحة.")
+            # المرة الثانية للمشترك
+            await update.message.reply_text(
+                "أهلاً بالمشترك.\n"
+                "الرجاء إدخال الرقم التسلسلي للمشترك:",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            user_data[STATE_KEY] = STATE_SUB_LINK_WAIT_SERIAL
+            return
+    else:
+        # إعادة ضبط
+        user_data.clear()
+        user_data[STATE_KEY] = STATE_NONE
+        await update.message.reply_text("تم إعادة التهيئة. أرسل /start من جديد.")
+        return
+
+
+async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_id = get_admin_user_id()
+    if admin_id:
+        # مدير موجود بالفعل
+        if is_admin(update):
+            await update.message.reply_text(
+                "مرحباً أيها المدير.\nاختر من لوحة التحكم:",
+                reply_markup=admin_keyboard(),
+            )
+            context.user_data[STATE_KEY] = STATE_NONE
+        else:
+            await update.message.reply_text("تم تعيين مدير بالفعل ولا يمكنك استخدام هذا الأمر.")
+        return
+
+    # لا يوجد مدير بعد
+    await update.message.reply_text(
+        "الرجاء إدخال USER_ID الخاص بالمدير (سيتم تعيينك كمدير إن أدخلته من حسابك):"
+    )
+    context.user_data[STATE_KEY] = STATE_ADMIN_WAIT_USER_ID
+
+
+# ============ معالجة الرسائل النصية ============
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+
+    text = update.message.text.strip()
+    user_data = context.user_data
+    state = user_data.get(STATE_KEY, STATE_NONE)
+
+    # إعداد المدير لأول مرة
+    if state == STATE_ADMIN_WAIT_USER_ID:
+        try:
+            uid = int(text)
+        except ValueError:
+            await update.message.reply_text("الرجاء إدخال رقم صحيح لـ USER_ID.")
+            return
+        # تعيين المدير
+        set_admin_user_id(uid)
+        if update.effective_user.id == uid:
+            await update.message.reply_text(
+                "تم تعيينك كمدير.\nهذه لوحة المدير:", reply_markup=admin_keyboard()
+            )
+        else:
+            await update.message.reply_text(
+                "تم تعيين مدير جديد.\nلا يمكنك استخدام لوحة المدير من هذا الحساب."
+            )
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # ربط المشترك: إدخال الرقم التسلسلي
+    if state == STATE_SUB_LINK_WAIT_SERIAL:
+        try:
+            serial = int(text)
+        except ValueError:
+            await update.message.reply_text("الرجاء إدخال الرقم التسلسلي بشكل صحيح (أرقام فقط).")
+            return
+        user_data["link_serial"] = serial
+        user_data[STATE_KEY] = STATE_SUB_LINK_WAIT_ACCOUNT
+        await update.message.reply_text("الرجاء إدخال رقم المشترك:")
+        return
+
+    # ربط المشترك: إدخال رقم المشترك
+    if state == STATE_SUB_LINK_WAIT_ACCOUNT:
+        serial = user_data.get("link_serial")
+        account_no = text
+        sub = find_subscriber_by_serial_and_account(serial, account_no)
+        if not sub:
+            await update.message.reply_text(
+                "لم يتم العثور على مشترك بهذه البيانات.\nالرجاء التأكد من الرقم التسلسلي ورقم المشترك."
+            )
+            return
+        link_subscriber_chat(serial, account_no, update.effective_chat.id)
+        info = format_subscriber_info(sub)
+        await update.message.reply_text(
+            "تم ربط حسابك بنجاح.\nبياناتك:\n\n" + info + "\nمرحباً بك.",
+            reply_markup=subscriber_keyboard(),
+        )
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # من هنا فصاعداً: أوامر المدير أو المشترك حسب الهوية
+    if is_admin(update):
+        await admin_text_router(update, context, text, state)
+    else:
+        await subscriber_text_router(update, context, text, state)
+
+
+# ============ توجيه رسائل المدير ============
+async def admin_text_router(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: str
+):
+    user_data = context.user_data
+
+    # لوحات الأزرار الرئيسية
+    if state == STATE_NONE:
+        if text == "مشترك جديد":
+            serial = get_next_serial()
+            user_data["new_sub_serial"] = serial
+            await update.message.reply_text(
+                f"إنشاء مشترك جديد.\nالرقم التسلسلي المقترح: {serial}\n"
+                "الرجاء إدخال اسم المشترك (رباعي أو خماسي):",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_NEW_SUB_NAME
+            return
+
+        if text == "تعديل مشترك":
+            await update.message.reply_text(
+                "الرجاء إدخال رقم المشترك الذي تريد تعديله:",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_EDIT_SUB_WAIT_ACCOUNT
+            return
+
+        if text == "تسجيل قراءة":
+            await update.message.reply_text(
+                "الرجاء إدخال رقم المشترك لتسجيل القراءة:",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_READ_WAIT_ACCOUNT
+            return
+
+        if text == "تسجيل دفع":
+            await update.message.reply_text(
+                "الرجاء إدخال رقم المشترك لتسجيل الدفع:",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_PAY_WAIT_ACCOUNT
+            return
+
+        if text == "كشف مشترك":
+            await update.message.reply_text(
+                "الرجاء إدخال رقم المشترك للاستعلام:",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_INQ_WAIT_ACCOUNT
+            return
+
+        if text == "كشف منطقة":
+            areas = get_all_areas()
+            if not areas:
+                await update.message.reply_text(
+                    "لا توجد مناطق مسجلة بعد.", reply_markup=admin_keyboard()
+                )
+                return
+            buttons = [
+                [InlineKeyboardButton(a[1], callback_data=f"area_{a[0]}")]
+                for a in areas
+            ]
+            await update.message.reply_text(
+                "اختر المنطقة:",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_AREA_CHOOSE
+            return
+
+        if text == "كشف رئيسي":
+            await update.message.reply_text(
+                "أدخل تاريخ البداية بصيغة يوم/شهر/سنة:",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_MAIN_WAIT_FROM
+            return
+
+        if text == "إرسال رسالة":
+            buttons = [
+                [
+                    InlineKeyboardButton("عامة", callback_data="msg_type_general"),
+                    InlineKeyboardButton("منطقة", callback_data="msg_type_area"),
+                    InlineKeyboardButton("مشترك", callback_data="msg_type_sub"),
+                ]
+            ]
+            await update.message.reply_text(
+                "اختر نوع الرسالة:", reply_markup=InlineKeyboardMarkup(buttons)
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_MSG_TYPE
+            return
+
+        if text == "إغلاق سنوي":
+            buttons = [
+                [
+                    InlineKeyboardButton("موافق", callback_data="annual_ok"),
+                    InlineKeyboardButton("إلغاء", callback_data="annual_cancel"),
+                ]
+            ]
+            await update.message.reply_text(
+                "هل أنت متأكد من تنفيذ الإغلاق السنوي؟",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_ANNUAL_CONFIRM
+            return
+
+        # أي نص آخر
+        await update.message.reply_text(
+            "اختر من لوحة المدير أو استخدم الأوامر المتاحة.",
+            reply_markup=admin_keyboard(),
+        )
+        return
+
+    # مشترك جديد: إدخال الاسم
+    if state == STATE_ADMIN_NEW_SUB_NAME:
+        user_data["new_sub_name"] = text
+        await update.message.reply_text("الرجاء إدخال رقم المشترك (رقم العداد):")
+        user_data[STATE_KEY] = STATE_ADMIN_NEW_SUB_ACCOUNT
+        return
+
+    # مشترك جديد: إدخال رقم المشترك
+    if state == STATE_ADMIN_NEW_SUB_ACCOUNT:
+        user_data["new_sub_account"] = text
+        await update.message.reply_text("الرجاء إدخال اسم المنطقة:")
+        user_data[STATE_KEY] = STATE_ADMIN_NEW_SUB_AREA
+        return
+
+    # مشترك جديد: إدخال المنطقة
+    if state == STATE_ADMIN_NEW_SUB_AREA:
+        serial = user_data.get("new_sub_serial")
+        name = user_data.get("new_sub_name")
+        account_no = user_data.get("new_sub_account")
+        area_name = text
+        create_subscriber(serial, account_no, name, area_name)
+        await update.message.reply_text(
+            "تم حفظ المشترك الجديد بنجاح.\n"
+            f"الرقم التسلسلي: {serial}\n"
+            f"رقم المشترك: {account_no}\n"
+            f"الاسم: {name}\n"
+            f"المنطقة: {area_name}",
+            reply_markup=admin_keyboard(),
+        )
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # تعديل مشترك: إدخال رقم المشترك
+    if state == STATE_ADMIN_EDIT_SUB_WAIT_ACCOUNT:
+        sub = find_subscriber_by_account(text)
+        if not sub:
+            await update.message.reply_text(
+                "لم يتم العثور على مشترك بهذا الرقم.", reply_markup=admin_keyboard()
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+        user_data["edit_sub_id"] = sub[0]
+        info = format_subscriber_info(sub)
+        buttons = [
+            [
+                InlineKeyboardButton("تعديل الاسم", callback_data="edit_name"),
+                InlineKeyboardButton("تعديل المنطقة", callback_data="edit_area"),
+            ]
+        ]
+        await update.message.reply_text(
+            "بيانات المشترك:\n\n" + info + "\nاختر ما تريد تعديله:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+        user_data[STATE_KEY] = STATE_ADMIN_EDIT_SUB_CHOICE
+        return
+
+    # تعديل مشترك: إدخال اسم جديد
+    if state == STATE_ADMIN_EDIT_SUB_NEW_NAME:
+        sub_id = user_data.get("edit_sub_id")
+        update_subscriber(sub_id, name=text)
+        await update.message.reply_text(
+            "تم تعديل الاسم بنجاح.", reply_markup=admin_keyboard()
+        )
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # تعديل مشترك: إدخال منطقة جديدة
+    if state == STATE_ADMIN_EDIT_SUB_NEW_AREA:
+        sub_id = user_data.get("edit_sub_id")
+        update_subscriber(sub_id, area_name=text)
+        await update.message.reply_text(
+            "تم تعديل المنطقة بنجاح.", reply_markup=admin_keyboard()
+        )
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # تسجيل قراءة: إدخال رقم المشترك
+    if state == STATE_ADMIN_READ_WAIT_ACCOUNT:
+        sub = find_subscriber_by_account(text)
+        if not sub:
+            await update.message.reply_text(
+                "لم يتم العثور على مشترك بهذا الرقم.", reply_markup=admin_keyboard()
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+        user_data["read_sub_id"] = sub[0]
+        await update.message.reply_text("الرجاء إدخال آخر قراءة (رقم العداد الحالي):")
+        user_data[STATE_KEY] = STATE_ADMIN_READ_WAIT_VALUE
+        return
+
+    # تسجيل قراءة: إدخال القراءة
+    if state == STATE_ADMIN_READ_WAIT_VALUE:
+        try:
+            curr_read = int(text)
+        except ValueError:
+            await update.message.reply_text("الرجاء إدخال رقم صحيح للقراءة.")
+            return
+        sub_id = user_data.get("read_sub_id")
+        sub = find_subscriber_by_id(sub_id)
+        prev_read, units, unit_price, amount = add_reading(sub_id, curr_read)
+        user_data["read_curr"] = curr_read
+        user_data["read_prev"] = prev_read
+        user_data["read_units"] = units
+        user_data["read_unit_price"] = unit_price
+        user_data["read_amount"] = amount
+
+        info = format_subscriber_info(sub)
+        text_msg = (
+            "تسجيل قراءة جديدة:\n\n"
+            + info
+            + f"القراءة السابقة: {prev_read}\n"
+            f"القراءة الحالية: {curr_read}\n"
+            f"فارق القراءات (وحدات): {units}\n"
+            f"سعر الوحدة: {unit_price}\n"
+            f"قيمة الاستهلاك: {amount}\n\n"
+            "هل تريد حفظ هذه القراءة؟"
+        )
+        buttons = [
+            [
+                InlineKeyboardButton("حفظ", callback_data="read_save"),
+                InlineKeyboardButton("تعديل", callback_data="read_edit"),
+            ]
+        ]
+        await update.message.reply_text(
+            text_msg, reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        user_data[STATE_KEY] = STATE_ADMIN_READ_CONFIRM
+        return
+
+    # تسجيل دفع: إدخال رقم المشترك
+    if state == STATE_ADMIN_PAY_WAIT_ACCOUNT:
+        sub = find_subscriber_by_account(text)
+        if not sub:
+            await update.message.reply_text(
+                "لم يتم العثور على مشترك بهذا الرقم.", reply_markup=admin_keyboard()
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+        user_data["pay_sub_id"] = sub[0]
+        await update.message.reply_text("الرجاء إدخال مبلغ الدفع:")
+        user_data[STATE_KEY] = STATE_ADMIN_PAY_WAIT_AMOUNT
+        return
+
+    # تسجيل دفع: إدخال المبلغ
+    if state == STATE_ADMIN_PAY_WAIT_AMOUNT:
+        try:
+            amount = int(text)
+        except ValueError:
+            await update.message.reply_text("الرجاء إدخال مبلغ صحيح (أرقام فقط).")
+            return
+        user_data["pay_amount"] = amount
+        sub_id = user_data.get("pay_sub_id")
+        sub = find_subscriber_by_id(sub_id)
+        info = format_subscriber_info(sub)
+        msg = (
+            "تسجيل دفع جديد:\n\n"
+            + info
+            + f"المبلغ: {amount}\n\n"
+            "هل تريد حفظ هذه العملية؟"
+        )
+        buttons = [
+            [
+                InlineKeyboardButton("حفظ", callback_data="pay_save"),
+                InlineKeyboardButton("تعديل", callback_data="pay_edit"),
+            ]
+        ]
+        await update.message.reply_text(
+            msg, reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        user_data[STATE_KEY] = STATE_ADMIN_PAY_CONFIRM
+        return
+
+    # كشف مشترك: إدخال رقم المشترك
+    if state == STATE_ADMIN_INQ_WAIT_ACCOUNT:
+        sub = find_subscriber_by_account(text)
+        if not sub:
+            await update.message.reply_text(
+                "لم يتم العثور على مشترك بهذا الرقم.", reply_markup=admin_keyboard()
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+        sub_id = sub[0]
+        info = format_subscriber_status(sub_id)
+        buttons = [
+            [
+                InlineKeyboardButton("إرسال للمشترك", callback_data=f"inq_send_{sub_id}"),
+                InlineKeyboardButton("تجاهل", callback_data="inq_ignore"),
+            ]
+        ]
+        await update.message.reply_text(
+            info, reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # كشف منطقة: إدخال تاريخ البداية/النهاية
+    if state == STATE_ADMIN_AREA_WAIT_FROM:
+        d = parse_date_str(text)
+        if not d:
+            await update.message.reply_text("صيغة التاريخ غير صحيحة. استخدم يوم/شهر/سنة.")
+            return
+        user_data["area_from_date"] = d
+        await update.message.reply_text("أدخل تاريخ النهاية بصيغة يوم/شهر/سنة:")
+        user_data[STATE_KEY] = STATE_ADMIN_AREA_WAIT_TO
+        return
+
+    if state == STATE_ADMIN_AREA_WAIT_TO:
+        d = parse_date_str(text)
+        if not d:
+            await update.message.reply_text("صيغة التاريخ غير صحيحة. استخدم يوم/شهر/سنة.")
+            return
+        user_data["area_to_date"] = d
+        area_id = user_data.get("area_id")
+        total_c, total_p, bal = get_area_summary(
+            area_id, user_data["area_from_date"], user_data["area_to_date"]
+        )
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT name FROM areas WHERE id=?", (area_id,))
+        area_name = c.fetchone()[0]
         conn.close()
-    except:
-        await update.message.reply_text("الصيغة: التسلسلي-المشترك")
-    return MAIN_MENU
 
-async def user_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    conn = sqlite3.connect('water_system.db')
-    u = conn.execute("SELECT name, prev_reading, balance FROM users WHERE chat_id=?", (uid,)).fetchone()
+        msg = (
+            f"كشف منطقة: {area_name}\n"
+            f"الفترة: من {user_data['area_from_date']} إلى {user_data['area_to_date']}\n\n"
+            f"إجمالي الاستهلاك (مبلغ): {total_c}\n"
+            f"إجمالي المدفوع: {total_p}\n"
+            f"إجمالي المتأخرات: {bal}"
+        )
+
+        # توليد ملف PDF
+        filename = f"area_{area_id}_{datetime.utcnow().timestamp()}.pdf"
+        generate_area_or_global_pdf(
+            filename,
+            f"كشف منطقة: {area_name}",
+            user_data["area_from_date"],
+            user_data["area_to_date"],
+            total_c,
+            total_p,
+            bal,
+        )
+
+        await update.message.reply_text(msg, reply_markup=admin_keyboard())
+        await update.message.reply_document(
+            document=InputFile(filename, filename=os.path.basename(filename)),
+            caption="ملف كشف المنطقة (PDF).",
+        )
+        os.remove(filename)
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # كشف رئيسي: إدخال تاريخ البداية/النهاية
+    if state == STATE_ADMIN_MAIN_WAIT_FROM:
+        d = parse_date_str(text)
+        if not d:
+            await update.message.reply_text("صيغة التاريخ غير صحيحة. استخدم يوم/شهر/سنة.")
+            return
+        user_data["main_from_date"] = d
+        await update.message.reply_text("أدخل تاريخ النهاية بصيغة يوم/شهر/سنة:")
+        user_data[STATE_KEY] = STATE_ADMIN_MAIN_WAIT_TO
+        return
+
+    if state == STATE_ADMIN_MAIN_WAIT_TO:
+        d = parse_date_str(text)
+        if not d:
+            await update.message.reply_text("صيغة التاريخ غير صحيحة. استخدم يوم/شهر/سنة.")
+            return
+        user_data["main_to_date"] = d
+        total_c, total_p, bal = get_global_summary(
+            user_data["main_from_date"], user_data["main_to_date"]
+        )
+        msg = (
+            "كشف رئيسي لجميع المناطق:\n"
+            f"الفترة: من {user_data['main_from_date']} إلى {user_data['main_to_date']}\n\n"
+            f"إجمالي الاستهلاك (مبلغ): {total_c}\n"
+            f"إجمالي المدفوع: {total_p}\n"
+            f"إجمالي المتأخرات: {bal}"
+        )
+
+        filename = f"main_{datetime.utcnow().timestamp()}.pdf"
+        generate_area_or_global_pdf(
+            filename,
+            "كشف رئيسي لجميع المناطق",
+            user_data["main_from_date"],
+            user_data["main_to_date"],
+            total_c,
+            total_p,
+            bal,
+        )
+
+        await update.message.reply_text(msg, reply_markup=admin_keyboard())
+        await update.message.reply_document(
+            document=InputFile(filename, filename=os.path.basename(filename)),
+            caption="ملف الكشف الرئيسي (PDF).",
+        )
+        os.remove(filename)
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # إرسال رسالة: إدخال نص الرسالة
+    if state == STATE_ADMIN_MSG_TEXT:
+        msg_type = user_data.get("msg_type")
+        text_msg = text
+        if msg_type == "general":
+            # إلى جميع المشتركين
+            conn = get_conn()
+            c = conn.cursor()
+            c.execute("SELECT chat_id FROM subscribers WHERE chat_id IS NOT NULL")
+            chats = [row[0] for row in c.fetchall()]
+            conn.close()
+            for ch in chats:
+                try:
+                    await context.bot.send_message(
+                        chat_id=ch, text=text_msg
+                    )
+                except Exception:
+                    pass
+            log_message("general", "all", text_msg)
+            await update.message.reply_text(
+                "تم إرسال الرسالة العامة لجميع المشتركين.",
+                reply_markup=admin_keyboard(),
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+
+        if msg_type == "area":
+            area_ids = user_data.get("msg_area_ids", [])
+            if not area_ids:
+                await update.message.reply_text(
+                    "لم يتم اختيار أي منطقة.", reply_markup=admin_keyboard()
+                )
+                user_data[STATE_KEY] = STATE_NONE
+                return
+            conn = get_conn()
+            c = conn.cursor()
+            for aid in area_ids:
+                c.execute(
+                    "SELECT chat_id FROM subscribers WHERE area_id=? AND chat_id IS NOT NULL",
+                    (aid,),
+                )
+                chats = [row[0] for row in c.fetchall()]
+                for ch in chats:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=ch, text=text_msg
+                        )
+                    except Exception:
+                        pass
+            conn.close()
+            log_message("area", ",".join(map(str, area_ids)), text_msg)
+            await update.message.reply_text(
+                "تم إرسال الرسالة للمناطق المحددة.", reply_markup=admin_keyboard()
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+
+        if msg_type == "sub":
+            sub_id = user_data.get("msg_sub_id")
+            sub = find_subscriber_by_id(sub_id)
+            if not sub or not sub[5]:
+                await update.message.reply_text(
+                    "لا يوجد قناة مرتبطة بهذا المشترك.", reply_markup=admin_keyboard()
+                )
+                user_data[STATE_KEY] = STATE_NONE
+                return
+            try:
+                await context.bot.send_message(chat_id=sub[5], text=text_msg)
+            except Exception:
+                pass
+            log_message("subscriber", str(sub_id), text_msg)
+            await update.message.reply_text(
+                "تم إرسال الرسالة للمشترك.", reply_markup=admin_keyboard()
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+
+    # كشف حساب مشترك من جهة المدير
+    if state == STATE_ADMIN_SUB_STATEMENT_WAIT_ACCOUNT:
+        sub = find_subscriber_by_account(text)
+        if not sub:
+            await update.message.reply_text(
+                "لم يتم العثور على مشترك بهذا الرقم.", reply_markup=admin_keyboard()
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+        user_data["stmt_sub_id"] = sub[0]
+        await update.message.reply_text(
+            "أدخل تاريخ البداية بصيغة يوم/شهر/سنة:"
+        )
+        user_data[STATE_KEY] = STATE_ADMIN_SUB_STATEMENT_WAIT_FROM
+        return
+
+    if state == STATE_ADMIN_SUB_STATEMENT_WAIT_FROM:
+        d = parse_date_str(text)
+        if not d:
+            await update.message.reply_text("صيغة التاريخ غير صحيحة. استخدم يوم/شهر/سنة.")
+            return
+        user_data["stmt_from_date"] = d
+        await update.message.reply_text("أدخل تاريخ النهاية بصيغة يوم/شهر/سنة:")
+        user_data[STATE_KEY] = STATE_ADMIN_SUB_STATEMENT_WAIT_TO
+        return
+
+    if state == STATE_ADMIN_SUB_STATEMENT_WAIT_TO:
+        d = parse_date_str(text)
+        if not d:
+            await update.message.reply_text("صيغة التاريخ غير صحيحة. استخدم يوم/شهر/سنة.")
+            return
+        user_data["stmt_to_date"] = d
+        sub_id = user_data.get("stmt_sub_id")
+        sub = find_subscriber_by_id(sub_id)
+        readings, payments = get_subscriber_statement(
+            sub_id, user_data["stmt_from_date"], user_data["stmt_to_date"]
+        )
+        filename = f"statement_{sub_id}_{datetime.utcnow().timestamp()}.pdf"
+        generate_statement_pdf(
+            filename,
+            sub,
+            user_data["stmt_from_date"],
+            user_data["stmt_to_date"],
+            readings,
+            payments,
+        )
+        await update.message.reply_document(
+            document=InputFile(filename, filename=os.path.basename(filename)),
+            caption="كشف حساب المشترك (PDF).",
+        )
+        os.remove(filename)
+        await update.message.reply_text(
+            "تم إرسال كشف الحساب.", reply_markup=admin_keyboard()
+        )
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # إغلاق سنوي: إدخال كلمة السر
+    if state == STATE_ADMIN_ANNUAL_PASSWORD:
+        if text != ANNUAL_CLOSE_PASSWORD:
+            await update.message.reply_text(
+                "كلمة السر غير صحيحة. تم إلغاء الإغلاق السنوي.",
+                reply_markup=admin_keyboard(),
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+        filename = f"annual_{datetime.utcnow().timestamp()}.pdf"
+        generate_annual_pdf(filename)
+        await update.message.reply_document(
+            document=InputFile(filename, filename=os.path.basename(filename)),
+            caption="التقرير السنوي (PDF).",
+        )
+        os.remove(filename)
+
+        # إرسال رسائل مع كشف حساب لكل مشترك
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT id, serial, account_no, name, area_id, chat_id
+            FROM subscribers
+            WHERE chat_id IS NOT NULL
+        """
+        )
+        subs = c.fetchall()
+        conn.close()
+
+        for s in subs:
+            sub_id = s[0]
+            chat_id = s[5]
+            sub_full = find_subscriber_by_id(sub_id)
+            today = date.today()
+            from_date = date(today.year, 1, 1)
+            to_date = date(today.year, 12, 31)
+            readings, payments = get_subscriber_statement(sub_id, from_date, to_date)
+            fname = f"annual_stmt_{sub_id}_{datetime.utcnow().timestamp()}.pdf"
+            generate_statement_pdf(
+                fname, sub_full, from_date, to_date, readings, payments
+            )
+            msg = (
+                "عزيزي المشترك،\n"
+                "نرفق لك كشف حساب سنوي لمراجعة وضعك المالي مع مشروع المياه.\n"
+                "نرجو تسوية أي متأخرات في أقرب وقت لتفادي انقطاع الخدمة.\n"
+                "مع خالص الشكر والتقدير."
+            )
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=msg)
+                await context.bot.send_document(
+                    chat_id=chat_id,
+                    document=InputFile(fname, filename=os.path.basename(fname)),
+                    caption="كشف حساب سنوي (PDF).",
+                )
+            except Exception:
+                pass
+            os.remove(fname)
+
+        await update.message.reply_text(
+            "تم تنفيذ الإغلاق السنوي وإرسال التقارير للمشتركين.",
+            reply_markup=admin_keyboard(),
+        )
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # أي حالة غير معالجة
+    await update.message.reply_text(
+        "تمت معالجة الطلب أو انتهت الحالة.\nاختر من لوحة المدير.",
+        reply_markup=admin_keyboard(),
+    )
+    user_data[STATE_KEY] = STATE_NONE
+
+
+# ============ توجيه رسائل المشترك ============
+async def subscriber_text_router(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: str
+):
+    user_data = context.user_data
+    sub = find_subscriber_by_chat(update.effective_chat.id)
+    if not sub:
+        await update.message.reply_text(
+            "حسابك غير مرتبط كمشترك.\nأرسل /start واتبع التعليمات للربط."
+        )
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    sub_id = sub[0]
+
+    # الحالات الخاصة بكشف الحساب من جهة المشترك
+    if state == STATE_SUB_STATEMENT_WAIT_FROM:
+        d = parse_date_str(text)
+        if not d:
+            await update.message.reply_text("صيغة التاريخ غير صحيحة. استخدم يوم/شهر/سنة.")
+            return
+        user_data["sub_stmt_from"] = d
+        await update.message.reply_text("أدخل تاريخ النهاية بصيغة يوم/شهر/سنة:")
+        user_data[STATE_KEY] = STATE_SUB_STATEMENT_WAIT_TO
+        return
+
+    if state == STATE_SUB_STATEMENT_WAIT_TO:
+        d = parse_date_str(text)
+        if not d:
+            await update.message.reply_text("صيغة التاريخ غير صحيحة. استخدم يوم/شهر/سنة.")
+            return
+        user_data["sub_stmt_to"] = d
+        readings, payments = get_subscriber_statement(
+            sub_id, user_data["sub_stmt_from"], user_data["sub_stmt_to"]
+        )
+        filename = f"sub_stmt_{sub_id}_{datetime.utcnow().timestamp()}.pdf"
+        generate_statement_pdf(
+            filename,
+            sub,
+            user_data["sub_stmt_from"],
+            user_data["sub_stmt_to"],
+            readings,
+            payments,
+        )
+        await update.message.reply_document(
+            document=InputFile(filename, filename=os.path.basename(filename)),
+            caption="كشف حسابك (PDF).",
+        )
+        os.remove(filename)
+        await update.message.reply_text(
+            "تم إرسال كشف الحساب.", reply_markup=subscriber_keyboard()
+        )
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # الحالات العامة للمشترك
+    if text == "استعلام":
+        info = format_subscriber_status(sub_id)
+        await update.message.reply_text(info, reply_markup=subscriber_keyboard())
+        return
+
+    if text == "كشف حساب":
+        await update.message.reply_text(
+            "أدخل تاريخ البداية بصيغة يوم/شهر/سنة:",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        user_data[STATE_KEY] = STATE_SUB_STATEMENT_WAIT_FROM
+        return
+
+    await update.message.reply_text(
+        "استخدم الأزرار المتاحة في حساب المشترك.",
+        reply_markup=subscriber_keyboard(),
+    )
+    user_data[STATE_KEY] = STATE_NONE
+
+
+# ============ معالجة أزرار Inline ============
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    user_data = context.user_data
+    state = user_data.get(STATE_KEY, STATE_NONE)
+
+    # تعديل مشترك: اختيار نوع التعديل
+    if state == STATE_ADMIN_EDIT_SUB_CHOICE:
+        if data == "edit_name":
+            await query.edit_message_text("الرجاء إدخال الاسم الجديد للمشترك:")
+            user_data[STATE_KEY] = STATE_ADMIN_EDIT_SUB_NEW_NAME
+            return
+        if data == "edit_area":
+            await query.edit_message_text("الرجاء إدخال اسم المنطقة الجديدة:")
+            user_data[STATE_KEY] = STATE_ADMIN_EDIT_SUB_NEW_AREA
+            return
+
+    # تسجيل قراءة: تأكيد/تعديل
+    if state == STATE_ADMIN_READ_CONFIRM:
+        if data == "read_save":
+            sub_id = user_data.get("read_sub_id")
+            sub = find_subscriber_by_id(sub_id)
+            amount = user_data.get("read_amount")
+            units = user_data.get("read_units")
+            unit_price = user_data.get("read_unit_price")
+            prev_read = user_data.get("read_prev")
+            curr_read = user_data.get("read_curr")
+
+            # إرسال فاتورة للمشترك إن كان لديه chat_id
+            if sub and sub[5]:
+                msg = (
+                    "فاتورة استهلاك جديدة:\n\n"
+                    + format_subscriber_info(sub)
+                    + f"القراءة السابقة: {prev_read}\n"
+                    f"القراءة الحالية: {curr_read}\n"
+                    f"فارق القراءات (وحدات): {units}\n"
+                    f"سعر الوحدة: {unit_price}\n"
+                    f"قيمة الاستهلاك: {amount}\n"
+                )
+                try:
+                    await context.bot.send_message(chat_id=sub[5], text=msg)
+                except Exception:
+                    pass
+
+            await query.edit_message_text("تم حفظ القراءة وإرسال الفاتورة للمشترك.")
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="اختر من لوحة المدير:",
+                reply_markup=admin_keyboard(),
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+
+        if data == "read_edit":
+            await query.edit_message_text("الرجاء إدخال القراءة مرة أخرى:")
+            user_data[STATE_KEY] = STATE_ADMIN_READ_WAIT_VALUE
+            return
+
+    # تسجيل دفع: تأكيد/تعديل
+    if state == STATE_ADMIN_PAY_CONFIRM:
+        if data == "pay_save":
+            sub_id = user_data.get("pay_sub_id")
+            amount = user_data.get("pay_amount")
+            add_payment(sub_id, amount)
+            sub = find_subscriber_by_id(sub_id)
+            if sub and sub[5]:
+                msg = (
+                    "سند قبض جديد:\n\n"
+                    + format_subscriber_info(sub)
+                    + f"المبلغ المدفوع: {amount}\n"
+                )
+                try:
+                    await context.bot.send_message(chat_id=sub[5], text=msg)
+                except Exception:
+                    pass
+            await query.edit_message_text("تم حفظ الدفع وإرسال سند القبض للمشترك.")
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="اختر من لوحة المدير:",
+                reply_markup=admin_keyboard(),
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+
+        if data == "pay_edit":
+            await query.edit_message_text("الرجاء إدخال مبلغ الدفع مرة أخرى:")
+            user_data[STATE_KEY] = STATE_ADMIN_PAY_WAIT_AMOUNT
+            return
+
+    # كشف مشترك: إرسال للمشترك أو تجاهل
+    if data.startswith("inq_send_"):
+        sub_id = int(data.split("_")[-1])
+        sub = find_subscriber_by_id(sub_id)
+        if sub and sub[5]:
+            info = format_subscriber_status(sub_id)
+            try:
+                await context.bot.send_message(chat_id=sub[5], text=info)
+            except Exception:
+                pass
+            await query.edit_message_text("تم إرسال كشف المشترك إليه.")
+        else:
+            await query.edit_message_text("لا يوجد قناة مرتبطة بهذا المشترك.")
+        return
+
+    if data == "inq_ignore":
+        await query.edit_message_text("تم تجاهل العملية.")
+        return
+
+    # كشف منطقة: اختيار المنطقة
+    if state == STATE_ADMIN_AREA_CHOOSE and data.startswith("area_"):
+        area_id = int(data.split("_")[1])
+        user_data["area_id"] = area_id
+        await query.edit_message_text(
+            "أدخل تاريخ البداية بصيغة يوم/شهر/سنة:"
+        )
+        user_data[STATE_KEY] = STATE_ADMIN_AREA_WAIT_FROM
+        return
+
+    # إرسال رسالة: اختيار نوع الرسالة
+    if state == STATE_ADMIN_MSG_TYPE:
+        if data == "msg_type_general":
+            user_data["msg_type"] = "general"
+            await query.edit_message_text("اكتب نص الرسالة العامة:")
+            user_data[STATE_KEY] = STATE_ADMIN_MSG_TEXT
+            return
+        if data == "msg_type_area":
+            user_data["msg_type"] = "area"
+            areas = get_all_areas()
+            if not areas:
+                await query.edit_message_text("لا توجد مناطق مسجلة.")
+                user_data[STATE_KEY] = STATE_NONE
+                return
+            buttons = []
+            for a in areas:
+                buttons.append(
+                    [
+                        InlineKeyboardButton(
+                            a[1], callback_data=f"msg_area_{a[0]}"
+                        )
+                    ]
+                )
+            buttons.append(
+                [InlineKeyboardButton("تم الاختيار", callback_data="msg_area_done")]
+            )
+            await query.edit_message_text(
+                "اختر منطقة أو أكثر (بالضغط على الأزرار)، ثم اضغط (تم الاختيار):",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+            user_data["msg_area_ids"] = []
+            return
+        if data == "msg_type_sub":
+            user_data["msg_type"] = "sub"
+            await query.edit_message_text(
+                "أدخل رقم المشترك أو اسم المشترك:"
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_MSG_SUB_WAIT
+            return
+
+    # إرسال رسالة: اختيار مناطق متعددة
+    if data.startswith("msg_area_") and not data.endswith("done"):
+        area_id = int(data.split("_")[2])
+        area_ids = user_data.get("msg_area_ids", [])
+        if area_id not in area_ids:
+            area_ids.append(area_id)
+        user_data["msg_area_ids"] = area_ids
+        await query.answer("تم اختيار المنطقة.")
+        return
+
+    if data == "msg_area_done":
+        area_ids = user_data.get("msg_area_ids", [])
+        if not area_ids:
+            await query.edit_message_text("لم يتم اختيار أي منطقة.")
+            user_data[STATE_KEY] = STATE_NONE
+            return
+        await query.edit_message_text("اكتب نص الرسالة لإرسالها للمناطق المحددة:")
+        user_data[STATE_KEY] = STATE_ADMIN_MSG_TEXT
+        return
+
+    # إرسال رسالة: اختيار مشترك
+    if state == STATE_ADMIN_MSG_SUB_WAIT:
+        # هذا الجزء يتم في text_handler وليس هنا
+        return
+
+    # إغلاق سنوي: موافق/إلغاء
+    if state == STATE_ADMIN_ANNUAL_CONFIRM:
+        if data == "annual_ok":
+            await query.edit_message_text("الرجاء إدخال كلمة السر للإغلاق السنوي:")
+            user_data[STATE_KEY] = STATE_ADMIN_ANNUAL_PASSWORD
+            return
+        if data == "annual_cancel":
+            await query.edit_message_text("تم إلغاء الإغلاق السنوي.")
+            user_data[STATE_KEY] = STATE_NONE
+            return
+
+    # أي زر آخر
+    await query.edit_message_text("تمت معالجة الطلب أو انتهت الحالة.")
+    user_data[STATE_KEY] = STATE_NONE
+
+
+# ============ بحث عن مشترك بالاسم أو الرقم للرسائل ============
+async def msg_sub_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # هذا الهاندل يُستدعى من text_handler عندما تكون الحالة STATE_ADMIN_MSG_SUB_WAIT
+    user_data = context.user_data
+    text = update.message.text.strip()
+    conn = get_conn()
+    c = conn.cursor()
+    # محاولة البحث برقم المشترك أولاً
+    c.execute(
+        """
+        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
+        FROM subscribers s
+        LEFT JOIN areas a ON s.area_id = a.id
+        WHERE s.account_no=?
+    """,
+        (text,),
+    )
+    row = c.fetchone()
+    if not row:
+        # البحث بالاسم
+        c.execute(
+            """
+            SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
+            FROM subscribers s
+            LEFT JOIN areas a ON s.area_id = a.id
+            WHERE s.name LIKE ?
+        """,
+            (f"%{text}%",),
+        )
+        row = c.fetchone()
     conn.close()
-    if u:
-        await update.message.reply_text(f"👤 الاسم: {u[0]}\n📟 آخر قراءة: {u[1]}\n💰 الرصيد/المتأخرات: {u[2]} ريال")
+    if not row:
+        await update.message.reply_text(
+            "لم يتم العثور على مشترك بهذا الاسم أو الرقم.",
+            reply_markup=admin_keyboard(),
+        )
+        user_data[STATE_KEY] = STATE_NONE
+        return
+    user_data["msg_sub_id"] = row[0]
+    info = format_subscriber_info(row)
+    await update.message.reply_text(
+        "تم اختيار المشترك:\n\n" + info + "\nاكتب نص الرسالة:",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    user_data[STATE_KEY] = STATE_ADMIN_MSG_TEXT
 
-async def new_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    serial = ''.join(random.choices(string.digits, k=6))
-    context.user_data['sn'] = serial
-    await update.message.reply_text(f"الرقم التسلسلي المولد: {serial}\nأدخل الاسم كاملاً:")
-    return ADD_NAME
 
-async def save_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['name'] = update.message.text
-    await update.message.reply_text("أدخل رقم المشترك (العداد):")
-    return ADD_METER
+# نعدل text_handler ليمرر هذه الحالة الخاصة
+async def text_handler_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_data = context.user_data
+    state = user_data.get(STATE_KEY, STATE_NONE)
+    if is_admin(update) and state == STATE_ADMIN_MSG_SUB_WAIT:
+        await msg_sub_text_handler(update, context)
+    else:
+        await text_handler(update, context)
 
-async def save_meter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['meter'] = update.message.text
-    await update.message.reply_text("أدخل المنطقة:")
-    return ADD_AREA
 
-async def save_final(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    area = update.message.text
-    conn = sqlite3.connect('water_system.db')
-    conn.execute("INSERT INTO users (serial_id, meter_num, name, area) VALUES (?, ?, ?, ?)",
-                 (context.user_data['sn'], context.user_data['meter'], context.user_data['name'], area))
-    conn.commit()
-    conn.close()
-    await update.message.reply_text("✅ تم الحفظ.", reply_markup=ReplyKeyboardMarkup(ADMIN_KB, resize_keyboard=True))
-    return MAIN_MENU
-
-# --- تشغيل البوت ---
-
+# ============ نقطة الدخول ============
 def main():
     init_db()
-    
-    # ************************************************
-    # هنا تضع التوكن الخاص بك بدلاً من الكلمة الموجودة بالأسفل
-    # ************************************************
-    TOKEN = "8090667485:AAGCgIlZPEB069W_bhpIr0HBdp20GpfCCPI"
-    
-    app = Application.builder().token(TOKEN).build()
-    
-    conv = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
-        states={
-            AUTH_STEP: [MessageHandler(filters.TEXT & ~filters.COMMAND, auth_step)],
-            USER_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_linking)],
-            MAIN_MENU: [
-                MessageHandler(filters.Regex('^مشترك جديد ➕$'), new_user_start),
-                MessageHandler(filters.Regex('^استعلام 🔍$'), user_query),
-                # يمكن إضافة باقي الوظائف هنا بنفس الطريقة
-            ],
-            ADD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_name)],
-            ADD_METER: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_meter)],
-            ADD_AREA: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_final)],
-        },
-        fallbacks=[CommandHandler('start', start)]
+
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("admin", admin_cmd))
+
+    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler_wrapper)
     )
-    
-    app.add_handler(conv)
-    print("البوت يعمل الآن... اذهب لتليجرام واضغط Start")
+
     app.run_polling()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
