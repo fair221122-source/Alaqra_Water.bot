@@ -946,8 +946,7 @@ async def client_period_from(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def client_period_to(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    date_from = update.message.text.strip()
-    date_from_saved context: ContextTypes.DEFAULT_TYPE):
+    date_from_saved = update.message.text.strip()
     await update.message.reply_text("أدخل الرقم التسلسلي للمشترك:")
     return ADMIN_STAT_SINGLE
 
