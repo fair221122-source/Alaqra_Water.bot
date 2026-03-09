@@ -1,586 +1,167 @@
-# -*- coding: utf-8 -*-
-
+import logging
 import sqlite3
+import io
+import random
+import string
 from datetime import datetime
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, Update
 from telegram.ext import (
-Application,
-CommandHandler,
-MessageHandler,
-ConversationHandler,
-ContextTypes,
-filters
+    Application, CommandHandler, MessageHandler, filters, 
+    ConversationHandler, ContextTypes, CallbackQueryHandler
 )
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
 
-TOKEN = "8090667485:AAGCgIlZPEB069W_bhpIr0HBdp20GpfCCPI"
-ADMIN_ID = 986199874
+# --- الإعدادات ---
+# ضع هنا الـ ID الخاص بحسابك (تحصل عليه من بوت @userinfobot)
+ADMIN_USER_ID = "986199874"  
+ANNUAL_PASSWORD = "root" 
+UNIT_PRICE = 500         
 
-UNIT_PRICE = 500
-YEAR_PASSWORD = "09092009"
+# --- قاعدة البيانات ---
+def init_db():
+    conn = sqlite3.connect('water_system.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS users 
+                 (serial_id TEXT PRIMARY KEY, meter_num TEXT, name TEXT, area TEXT, 
+                  chat_id INTEGER, prev_reading REAL DEFAULT 0, balance REAL DEFAULT 0)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS transactions 
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, meter_num TEXT, type TEXT, 
+                  value REAL, reading REAL, date TEXT)''')
+    conn.commit()
+    conn.close()
 
-AREAS = [
-"الحمراء",
-"الجبوبة",
-"عرض الجبل",
-"شمضات",
-"حظي",
-"الوادي",
-"بيع مباشر"
+# --- حالات الحوار ---
+(AUTH_STEP, MAIN_MENU, ADD_NAME, ADD_METER, ADD_AREA, 
+ REG_READ_NUM, REG_READ_VAL, CONFIRM_READ, 
+ REG_PAY_NUM, REG_PAY_VAL, CONFIRM_PAY,
+ USER_LINK, USER_STMT_DATE, ANNUAL_AUTH) = range(14)
+
+# --- لوحات المفاتيح ---
+ADMIN_KB = [
+    ['إرسال رسالة 📩', 'تسجيل قراءة 📥', 'تسجيل دفع 💰'],
+    ['كشف مشترك 👤', 'كشف منطقة 📍', 'كشف رئيسي 📊'],
+    ['تعديل مشترك ✏️', 'مشترك جديد ➕', 'إغلاق سنوي 🔒']
 ]
 
-conn = sqlite3.connect("water.db",check_same_thread=False)
-cur = conn.cursor()
+USER_KB = [['استعلام 🔍', 'كشف حساب 📑']]
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS subscribers(
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-name TEXT,
-meter TEXT,
-area TEXT,
-chat_id INTEGER
-)
-""")
+# --- الوظائف ---
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS readings(
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-subscriber_id INTEGER,
-reading INTEGER,
-consumption INTEGER,
-amount INTEGER,
-date TEXT
-)
-""")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    conn = sqlite3.connect('water_system.db')
+    user = conn.execute("SELECT name FROM users WHERE chat_id=?", (user_id,)).fetchone()
+    conn.close()
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS payments(
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-subscriber_id INTEGER,
-amount INTEGER,
-date TEXT
-)
-""")
+    if user:
+        await update.message.reply_text(f"مرحباً بك مجدداً {user[0]}", 
+                                       reply_markup=ReplyKeyboardMarkup(USER_KB, resize_keyboard=True))
+        return MAIN_MENU
 
-conn.commit()
+    if context.user_data.get('asked_once'):
+        await update.message.reply_text("يرجى إدخال (الرقم التسلسلي-رقم المشترك) للربط:")
+        return USER_LINK
+    
+    context.user_data['asked_once'] = True
+    await update.message.reply_text("مرحباً بك. إذا كنت المدير أرسل (admin)، وللمشترك أرسل /start مرة ثانية.")
+    return AUTH_STEP
 
-def admin_keyboard():
+async def auth_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text == "admin":
+        await update.message.reply_text("أدخل USER_ID المدير:")
+        return AUTH_STEP
+    elif text == str(ADMIN_USER_ID):
+        await update.message.reply_text("لوحة المدير جاهزة:", 
+                                       reply_markup=ReplyKeyboardMarkup(ADMIN_KB, resize_keyboard=True))
+        return MAIN_MENU
+    return AUTH_STEP
 
-    kb = [
-    ["💰 تسجيل دفع","📥 تسجيل قراءة","📨 إرسال رسالة"],
-    ["📊 كشف رئيسي","📍 كشف منطقة","👤 كشف مشترك"],
-    ["➕ مشترك جديد","✏️ تعديل مشترك","📅 إغلاق سنوي"]
-    ]
+async def user_linking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        serial, meter = update.message.text.split('-')
+        conn = sqlite3.connect('water_system.db')
+        c = conn.cursor()
+        user = c.execute("SELECT name FROM users WHERE serial_id=? AND meter_num=?", (serial, meter)).fetchone()
+        if user:
+            c.execute("UPDATE users SET chat_id=? WHERE meter_num=?", (update.effective_user.id, meter))
+            conn.commit()
+            await update.message.reply_text(f"تم الربط بنجاح! أهلاً بك {user[0]}", 
+                                           reply_markup=ReplyKeyboardMarkup(USER_KB, resize_keyboard=True))
+        else:
+            await update.message.reply_text("بيانات غير صحيحة.")
+        conn.close()
+    except:
+        await update.message.reply_text("الصيغة: التسلسلي-المشترك")
+    return MAIN_MENU
 
-    return ReplyKeyboardMarkup(kb,resize_keyboard=True)
+async def user_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    conn = sqlite3.connect('water_system.db')
+    u = conn.execute("SELECT name, prev_reading, balance FROM users WHERE chat_id=?", (uid,)).fetchone()
+    conn.close()
+    if u:
+        await update.message.reply_text(f"👤 الاسم: {u[0]}\n📟 آخر قراءة: {u[1]}\n💰 الرصيد/المتأخرات: {u[2]} ريال")
 
-def user_keyboard():
+async def new_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    serial = ''.join(random.choices(string.digits, k=6))
+    context.user_data['sn'] = serial
+    await update.message.reply_text(f"الرقم التسلسلي المولد: {serial}\nأدخل الاسم كاملاً:")
+    return ADD_NAME
 
-    kb = [
-    ["📊 استعلام","📄 كشف حساب"]
-    ]
+async def save_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['name'] = update.message.text
+    await update.message.reply_text("أدخل رقم المشترك (العداد):")
+    return ADD_METER
 
-    return ReplyKeyboardMarkup(kb,resize_keyboard=True)
+async def save_meter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['meter'] = update.message.text
+    await update.message.reply_text("أدخل المنطقة:")
+    return ADD_AREA
 
-async def start(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    user = update.effective_user.id
-
-    if user == ADMIN_ID:
-
-        await update.message.reply_text(
-        "لوحة المدير",
-        reply_markup=admin_keyboard()
-        )
-
-        return
-
-    await update.message.reply_text(
-    "مرحبا بك في مشروع مياة قرية بيت الأقرع\n\nادخل الرقم التسلسلي"
-    )
-
-LINK_ID,LINK_METER = range(2)
-
-async def link_id(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    context.user_data["sid"] = update.message.text
-
-    await update.message.reply_text("ادخل رقم العداد")
-
-    return LINK_METER
-
-async def link_meter(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    sid = context.user_data["sid"]
-    meter = update.message.text
-    chat = update.effective_user.id
-
-    cur.execute(
-    "SELECT id,name,area FROM subscribers WHERE id=? AND meter=?",
-    (sid,meter)
-    )
-
-    row = cur.fetchone()
-
-    if not row:
-
-        await update.message.reply_text("البيانات غير صحيحة")
-
-        return ConversationHandler.END
-
-    cur.execute(
-    "UPDATE subscribers SET chat_id=? WHERE id=?",
-    (chat,sid)
-    )
-
+async def save_final(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    area = update.message.text
+    conn = sqlite3.connect('water_system.db')
+    conn.execute("INSERT INTO users (serial_id, meter_num, name, area) VALUES (?, ?, ?, ?)",
+                 (context.user_data['sn'], context.user_data['meter'], context.user_data['name'], area))
     conn.commit()
-
-    name=row[1]
-    area=row[2]
-
-    await update.message.reply_text(
-f"""مرحبا بك في مشروع مياة قرية بيت الأقرع
-
-بياناتك هي :
-
-الرقم التسلسلي : {sid}
-الاسم : {name}
-رقم المشترك : {meter}
-المنطقة : {area}
-""",
-reply_markup=user_keyboard()
-)
-
-    return ConversationHandler.END
-
-NAME,AREA,METER = range(3)
-
-async def new_subscriber(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    await update.message.reply_text("ادخل اسم المشترك")
-
-    return NAME
-
-async def sub_name(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    context.user_data["name"]=update.message.text
-
-    await update.message.reply_text("ادخل المنطقة")
-
-    return AREA
-
-async def sub_area(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    context.user_data["area"]=update.message.text
-
-    await update.message.reply_text("ادخل رقم العداد")
-
-    return METER
-
-async def sub_meter(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    name=context.user_data["name"]
-    area=context.user_data["area"]
-    meter=update.message.text
-
-    cur.execute(
-    "INSERT INTO subscribers(name,meter,area) VALUES(?,?,?)",
-    (name,meter,area)
-    )
-
-    conn.commit()
-
-    await update.message.reply_text(
-    "تم إضافة المشترك",
-    reply_markup=admin_keyboard()
-    )
-
-    return ConversationHandler.END
-
-RID,RVAL = range(2)
-
-async def read_start(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_user.id!=ADMIN_ID:
-        return
-
-    await update.message.reply_text("ادخل الرقم التسلسلي")
-
-    return RID
-
-async def read_id(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    context.user_data["sid"]=update.message.text
-
-    await update.message.reply_text("ادخل القراءة الجديدة")
-
-    return RVAL
-
-async def read_value(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    sid=context.user_data["sid"]
-    reading=int(update.message.text)
-
-    cur.execute(
-    "SELECT reading FROM readings WHERE subscriber_id=? ORDER BY id DESC LIMIT 1",
-    (sid,)
-    )
-
-    row=cur.fetchone()
-
-    last=row[0] if row else 0
-
-    consumption=reading-last
-
-    amount=consumption*UNIT_PRICE
-
-    cur.execute(
-    "INSERT INTO readings(subscriber_id,reading,consumption,amount,date) VALUES(?,?,?,?,?)",
-    (sid,reading,consumption,amount,datetime.now())
-    )
-
-    conn.commit()
-
-    cur.execute(
-    "SELECT chat_id FROM subscribers WHERE id=?",
-    (sid,)
-    )
-
-    user=cur.fetchone()
-
-    if user and user[0]:
-
-        try:
-
-            await context.bot.send_message(
-            user[0],
-f"""تم تسجيل قراءة العداد
-
-الاستهلاك : {consumption}
-قيمة الفاتورة : {amount}
-
-سعر الوحدة : {UNIT_PRICE}
-"""
-            )
-
-        except:
-            pass
-
-    await update.message.reply_text(
-    "تم تسجيل القراءة",
-    reply_markup=admin_keyboard()
-    )
-
-    return ConversationHandler.END
-
-PID,PAM = range(2)
-
-async def pay_start(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_user.id!=ADMIN_ID:
-        return
-
-    await update.message.reply_text("ادخل الرقم التسلسلي")
-
-    return PID
-
-async def pay_id(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    context.user_data["sid"]=update.message.text
-
-    await update.message.reply_text("ادخل المبلغ")
-
-    return PAM
-
-async def pay_amount(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    sid=context.user_data["sid"]
-    amount=int(update.message.text)
-
-    cur.execute(
-    "INSERT INTO payments(subscriber_id,amount,date) VALUES(?,?,?)",
-    (sid,amount,datetime.now())
-    )
-
-    conn.commit()
-
-    cur.execute(
-    "SELECT chat_id FROM subscribers WHERE id=?",
-    (sid,)
-    )
-
-    user=cur.fetchone()
-
-    if user and user[0]:
-
-        try:
-
-            await context.bot.send_message(
-            user[0],
-f"""سند قبض
-
-تم استلام مبلغ وقدره {amount}
-
-شكرا لكم
-"""
-            )
-
-        except:
-            pass
-
-    await update.message.reply_text(
-    "تم تسجيل الدفع",
-    reply_markup=admin_keyboard()
-    )
-
-    return ConversationHandler.END
-
-async def inquiry(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    user=update.effective_user.id
-
-    cur.execute(
-    "SELECT id,name,area FROM subscribers WHERE chat_id=?",
-    (user,)
-    )
-
-    row=cur.fetchone()
-
-    if not row:
-
-        await update.message.reply_text("الحساب غير مربوط")
-
-        return
-
-    sid=row[0]
-
-    cur.execute(
-    "SELECT SUM(amount) FROM readings WHERE subscriber_id=?",
-    (sid,)
-    )
-
-    total=cur.fetchone()[0] or 0
-
-    cur.execute(
-    "SELECT SUM(amount) FROM payments WHERE subscriber_id=?",
-    (sid,)
-    )
-
-    paid=cur.fetchone()[0] or 0
-
-    remain=total-paid
-
-    await update.message.reply_text(
-f"""الاسم : {row[1]}
-المنطقة : {row[2]}
-
-إجمالي الفواتير : {total}
-المدفوع : {paid}
-المتبقي : {remain}
-"""
-)
-
-async def area_report(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_user.id!=ADMIN_ID:
-        return
-
-    await update.message.reply_text("اكتب اسم المنطقة")
-
-    context.user_data["area"]=True
-
-async def area_list(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    if "area" not in context.user_data:
-        return
-
-    area=update.message.text
-
-    cur.execute(
-    "SELECT id,name FROM subscribers WHERE area=?",
-    (area,)
-    )
-
-    rows=cur.fetchall()
-
-    text=f"كشف منطقة {area}\n\n"
-
-    for r in rows:
-
-        text+=f"{r[0]} - {r[1]}\n"
-
-    await update.message.reply_text(text)
-
-    context.user_data.pop("area")
-
-async def main_report(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_user.id!=ADMIN_ID:
-        return
-
-    cur.execute("SELECT id,name,area FROM subscribers")
-
-    rows=cur.fetchall()
-
-    text="كشف رئيسي\n\n"
-
-    for r in rows:
-
-        sid=r[0]
-
-        cur.execute("SELECT SUM(amount) FROM readings WHERE subscriber_id=?",(sid,))
-        total=cur.fetchone()[0] or 0
-
-        cur.execute("SELECT SUM(amount) FROM payments WHERE subscriber_id=?",(sid,))
-        paid=cur.fetchone()[0] or 0
-
-        remain=total-paid
-
-        text+=f"{r[0]} - {r[1]} - {r[2]} - المتبقي {remain}\n"
-
-    await update.message.reply_text(text)
-
-BROADCAST=0
-
-async def msg_start(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_user.id!=ADMIN_ID:
-        return
-
-    await update.message.reply_text("اكتب الرسالة")
-
-    return BROADCAST
-
-async def msg_send(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    text=update.message.text
-
-    cur.execute("SELECT chat_id FROM subscribers")
-
-    rows=cur.fetchall()
-
-    for r in rows:
-
-        if r[0]:
-
-            try:
-
-                await context.bot.send_message(r[0],text)
-
-            except:
-                pass
-
-    await update.message.reply_text(
-    "تم الإرسال",
-    reply_markup=admin_keyboard()
-    )
-
-    return ConversationHandler.END
-
-CLOSE=0
-
-async def close_year(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_user.id!=ADMIN_ID:
-        return
-
-    await update.message.reply_text("ادخل كلمة السر")
-
-    return CLOSE
-
-async def do_close(update:Update,context:ContextTypes.DEFAULT_TYPE):
-
-    if update.message.text!=YEAR_PASSWORD:
-
-        await update.message.reply_text("كلمة السر خطأ")
-
-        return ConversationHandler.END
-
-    cur.execute("DELETE FROM readings")
-
-    conn.commit()
-
-    await update.message.reply_text(
-    "تم الإغلاق السنوي",
-    reply_markup=admin_keyboard()
-    )
-
-    return ConversationHandler.END
+    conn.close()
+    await update.message.reply_text("✅ تم الحفظ.", reply_markup=ReplyKeyboardMarkup(ADMIN_KB, resize_keyboard=True))
+    return MAIN_MENU
+
+# --- تشغيل البوت ---
 
 def main():
-
-    app=Application.builder().token(TOKEN).build()
-
-    link_conv=ConversationHandler(
-    entry_points=[CommandHandler("start",start)],
-    states={
-    LINK_ID:[MessageHandler(filters.TEXT,link_id)],
-    LINK_METER:[MessageHandler(filters.TEXT,link_meter)]
-    },
-    fallbacks=[]
+    init_db()
+    
+    # ************************************************
+    # هنا تضع التوكن الخاص بك بدلاً من الكلمة الموجودة بالأسفل
+    # ************************************************
+    TOKEN = "8090667485:AAGCgIlZPEB069W_bhpIr0HBdp20GpfCCPI"
+    
+    app = Application.builder().token(TOKEN).build()
+    
+    conv = ConversationHandler(
+        entry_points=[CommandHandler('start', start)],
+        states={
+            AUTH_STEP: [MessageHandler(filters.TEXT & ~filters.COMMAND, auth_step)],
+            USER_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_linking)],
+            MAIN_MENU: [
+                MessageHandler(filters.Regex('^مشترك جديد ➕$'), new_user_start),
+                MessageHandler(filters.Regex('^استعلام 🔍$'), user_query),
+                # يمكن إضافة باقي الوظائف هنا بنفس الطريقة
+            ],
+            ADD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_name)],
+            ADD_METER: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_meter)],
+            ADD_AREA: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_final)],
+        },
+        fallbacks=[CommandHandler('start', start)]
     )
-
-    add_conv=ConversationHandler(
-    entry_points=[MessageHandler(filters.TEXT("➕ مشترك جديد"),new_subscriber)],
-    states={
-    NAME:[MessageHandler(filters.TEXT,sub_name)],
-    AREA:[MessageHandler(filters.TEXT,sub_area)],
-    METER:[MessageHandler(filters.TEXT,sub_meter)]
-    },
-    fallbacks=[]
-    )
-
-    read_conv=ConversationHandler(
-    entry_points=[MessageHandler(filters.TEXT("📥 تسجيل قراءة"),read_start)],
-    states={
-    RID:[MessageHandler(filters.TEXT,read_id)],
-    RVAL:[MessageHandler(filters.TEXT,read_value)]
-    },
-    fallbacks=[]
-    )
-
-    pay_conv=ConversationHandler(
-    entry_points=[MessageHandler(filters.TEXT("💰 تسجيل دفع"),pay_start)],
-    states={
-    PID:[MessageHandler(filters.TEXT,pay_id)],
-    PAM:[MessageHandler(filters.TEXT,pay_amount)]
-    },
-    fallbacks=[]
-    )
-
-    msg_conv=ConversationHandler(
-    entry_points=[MessageHandler(filters.TEXT("📨 إرسال رسالة"),msg_start)],
-    states={
-    BROADCAST:[MessageHandler(filters.TEXT,msg_send)]
-    },
-    fallbacks=[]
-    )
-
-    close_conv=ConversationHandler(
-    entry_points=[MessageHandler(filters.TEXT("📅 إغلاق سنوي"),close_year)],
-    states={
-    CLOSE:[MessageHandler(filters.TEXT,do_close)]
-    },
-    fallbacks=[]
-    )
-
-    app.add_handler(link_conv)
-    app.add_handler(add_conv)
-    app.add_handler(read_conv)
-    app.add_handler(pay_conv)
-    app.add_handler(msg_conv)
-    app.add_handler(close_conv)
-
-    app.add_handler(MessageHandler(filters.TEXT("📊 كشف رئيسي"),main_report))
-    app.add_handler(MessageHandler(filters.TEXT("📍 كشف منطقة"),area_report))
-    app.add_handler(MessageHandler(filters.TEXT("📊 استعلام"),inquiry))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,area_list))
-
-    print("BOT STARTED")
-
+    
+    app.add_handler(conv)
+    print("البوت يعمل الآن... اذهب لتليجرام واضغط Start")
     app.run_polling()
 
-if __name__=="__main__":
+if __name__ == '__main__':
     main()
