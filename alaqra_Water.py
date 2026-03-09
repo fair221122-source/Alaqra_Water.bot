@@ -926,9 +926,17 @@ if last_p:
     lines.append(
         f"آخر سداد: {last_p['amount']} بتاريخ {last_p['date']}"
     )
+if payments:
+    for p in payments:
+        lines.append(f"- {p}")
 else:
     lines.append("لا توجد دفعات مسجلة.")
-await update.message.reply_text("\n".join(lines), reply_markup=get_client_keyboard())
+
+async def some_function(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "\n".join(lines),
+        reply_markup=get_client_keyboard()
+    )
 
 async def client_period_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -1113,15 +1121,17 @@ async def admin_add_payment_value(update: Update, context: ContextTypes.DEFAULT_
         "date": datetime.now().strftime("%Y-%m-%d")
     })
     save_data(data)
-
-    await update.message.reply_text("تم تسجيل السداد.", reply_markup=get_admin_keyboard())
+async def admin_register_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "تم تسجيل السداد.",
+        reply_markup=get_admin_keyboard()
+    )
 
     client_id = get_user_id_by_serial(serial)
     if client_id:
         total_amount = sum(r["amount"] for r in data["readings"].get(serial, []))
         total_paid = sum(p["amount"] for p in data["payments"].get(serial, []))
         balance = total_amount - total_paid
-
         msg = (
             "💰 تم تسجيل سداد جديد\n\n"
             f"التسلسلي: {serial}\n"
@@ -1132,7 +1142,6 @@ async def admin_add_payment_value(update: Update, context: ContextTypes.DEFAULT_
         await context.bot.send_message(chat_id=client_id, text=msg)
 
     return ConversationHandler.END
-
 
 # إرسال رسالة (عامة / منطقة / مشترك)
 async def admin_msg_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1182,35 +1191,41 @@ async def admin_msg_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if mode == "عامة":
         for tg_id in data["clients"].keys():
             await update.get_bot().send_message(chat_id=int(tg_id), text=text)
-        await update.message.reply_text("تم إرسال الرسالة لجميع المشتركين.", reply_markup=get_admin_keyboard())
+
+        await update.message.reply_text(
+            "تم إرسال الرسالة لجميع المشتركين.",
+            reply_markup=get_admin_keyboard()
+        )
 
     elif mode == "منطقة":
-    area = context.user_data["msg_area"]
-    for serial, info in data["subscribers"].items():
-        if info.get("area") != area:
-            continue
+        area = context.user_data["msg_area"]
+
+        for serial, info in data["subscribers"].items():
+            if info.get("area") != area:
+                continue
+
+            tg_id = get_user_id_by_serial(serial)
+            if tg_id:
+                await update.get_bot().send_message(chat_id=tg_id, text=text)
+
+        await update.message.reply_text(
+            f"تم إرسال الرسالة لمشتركي منطقة {area}.",
+            reply_markup=get_admin_keyboard()
+        )
+
+    else:  # مشترك
+        serial = context.user_data["msg_serial"]
         tg_id = get_user_id_by_serial(serial)
+
         if tg_id:
             await update.get_bot().send_message(chat_id=tg_id, text=text)
-    await update.message.reply_text(f"تم إرسال الرسالة لمشتركي منطقة {area}.", reply_markup=get_admin_keyboard())
+        else:
+            await update.message.reply_text(
+                "لم يتم العثور على هذا المشترك.",
+                reply_markup=get_admin_keyboard()
+            )
 
-else:  # مشترك
-    serial = context.user_data["msg_serial"]
-    tg_id = get_user_id_by_serial(serial)
-    if tg_id:
-        await update.get_bot().send_message(chat_id=tg_id, text=text)
-    else:
-        await update.message.reply_text("لم يتم العثور على هذا المشترك.", reply_markup=get_admin_keyboard())
-
-return ConversationHandler.END
-
-
-# إضافة مشترك جديد
-async def admin_add_sub_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    serial = get_next_serial()
-    context.user_data["new_serial"] = serial
-    await update.message.reply_text(f"رقم المشترك الجديد هو: {serial}\nأدخل اسم المشترك كاملاً:")
-    return ADMIN_ADD_SUB_NAME
+    return ConversationHandler.END
 
 
 async def admin_add_sub_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
