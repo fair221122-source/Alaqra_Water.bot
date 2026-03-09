@@ -87,12 +87,16 @@ def get_user_id_by_serial(serial: str):
 
 def get_last_reading(serial: str):
     readings = data["readings"].get(serial, [])
-    return readings[-1] if readings else None
+    if readings:
+        return readings[-1]
+    return {"curr": 0, "amount": 0, "date": "—"}
 
 
 def get_last_payment(serial: str):
     payments = data["payments"].get(serial, [])
-    return payments[-1] if payments else None
+    if payments:
+        return payments[-1]
+    return {"amount": 0, "date": "—"}
 
 
 def generate_invoice_number():
