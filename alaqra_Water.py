@@ -1,6 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+def finalize_pdf_file(path):
+    """
+    إصلاح مشكلة ملفات PDF التالفة.
+    تؤخر حذف الملف قليلاً حتى ينتهي تيليجرام من رفعه.
+    """
+    import time, os
 
+    # تأخير بسيط يسمح لتيليجرام بقراءة الملف بالكامل
+    time.sleep(1.5)
+
+    # حذف آمن بدون أخطاء
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except:
+        pass
 import logging
 import os
 import sqlite3
