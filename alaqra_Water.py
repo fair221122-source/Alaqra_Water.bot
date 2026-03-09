@@ -1185,14 +1185,14 @@ async def admin_msg_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("تم إرسال الرسالة لجميع المشتركين.", reply_markup=get_admin_keyboard())
 
     elif mode == "منطقة":
-        area = context.user_data["msg_area"]
-        for serial, info in data["subscribers"].items():
-            if info.get("area") != area:
-                continue
-            tg_id = get_user_id_by_serial(serial)
-            if tg_id:
-                await update.get_bot().send_message(chat_id=tg_id, text=text)
-        await update.message.reply_text(f"تم إرسال الرسالة لمشتركي منطقة {area}.", reply_markup=get_admin_keyboard())
+    area = context.user_data["msg_area"]
+    for serial, info in data["subscribers"].items():
+        if info.get("area") != area:
+            continue
+        tg_id = get_user_id_by_serial(serial)
+        if tg_id:
+            await update.get_bot().send_message(chat_id=tg_id, text=text)
+    await update.message.reply_text(f"تم إرسال الرسالة لمشتركي منطقة {area}.", reply_markup=get_admin_keyboard())
 
 else:  # مشترك
     serial = context.user_data["msg_serial"]
