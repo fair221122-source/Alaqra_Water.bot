@@ -1,405 +1,215 @@
 import json
-import os
-from datetime import datetime
-
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    ConversationHandler,
     ContextTypes,
+    ConversationHandler,
     filters,
 )
 
 BOT_TOKEN = "8090667485:AAGCgIlZPEB069W_bhpIr0HBdp20GpfCCPI"
-DATA_FILE = "data.json"
-INITIAL_ADMIN_ID = 986199874
+ADMIN_ID = 986199874
 
+DATA_FILE = "water_data.json"
 
-# ───────── البيانات ─────────
+ADD_NAME, ADD_METER, ADD_AREA = range(3)
+EDIT_SERIAL, EDIT_AREA = range(3,5)
+SEARCH_SERIAL = 10
 
 def load_data():
-    if not os.path.exists(DATA_FILE):
-        data = {
-            "admin": {"admin_id": None},
-            "settings": {"price_per_unit": 250},
-            "clients": {},
-            "subscribers": {},
-            "readings": {},
-            "payments": {},
-        }
-        save_data(data)
-        return data
-
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
-
+    try:
+        with open(DATA_FILE,"r",encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {"subscribers":{}}
 
 def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
+    with open(DATA_FILE,"w",encoding="utf-8") as f:
+        json.dump(data,f,ensure_ascii=False,indent=2)
 
 data = load_data()
 
-AREAS = [
-    "الحمراء",
-    "الجبوبة",
-    "عرض الجبل",
-    "شمضات",
-    "حظي",
-    "الوادي",
-    "بيع مباشر",
-]
-
-
-# ───────── حالات ─────────
-
-CLIENT_ENTER_SERIAL, CLIENT_ENTER_SUB = range(2)
-
-ADMIN_ENTER_ID = 10
-
-ADMIN_ADD_READING_SERIAL, ADMIN_ADD_READING_VALUE = range(20, 22)
-ADMIN_ADD_PAYMENT_SERIAL, ADMIN_ADD_PAYMENT_VALUE = range(30, 32)
-
-ADMIN_ADD_SUB_NAME, ADMIN_ADD_SUB_METER, ADMIN_ADD_SUB_AREA = range(40, 43)
-
-ADMIN_EDIT_SERIAL, ADMIN_EDIT_AREA = range(50, 52)
-
-
-# ───────── لوحات المفاتيح ─────────
-
-def client_keyboard():
-    return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton("📌 استعلام")],
-        ],
-        resize_keyboard=True,
-    )
-
-
 def admin_keyboard():
-    return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton("📥 تسجيل قراءة"), KeyboardButton("💰 تسجيل دفع")],
-            [KeyboardButton("➕ مشترك جديد"), KeyboardButton("✏️ تعديل")],
-        ],
-        resize_keyboard=True,
-    )
+    keyboard = [
+        [KeyboardButton("📊 كشف مشترك"), KeyboardButton("📍 كشف منطقة"), KeyboardButton("📋 كشف رئيسي")],
+        [KeyboardButton("📢 إرسال رسالة"), KeyboardButton("📥 تسجيل قراءة"), KeyboardButton("💰 تسجيل دفع")],
+        [KeyboardButton("🔍 بحث")],
+        [KeyboardButton("➕ مشترك جديد"), KeyboardButton("✏️ تعديل")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-
-# ───────── دوال مساعدة ─────────
-
-def get_last_reading(serial):
-    readings = data["readings"].get(serial, [])
-    return readings[-1] if readings else {"curr": 0, "date": "—"}
-
-
-def get_last_payment(serial):
-    payments = data["payments"].get(serial, [])
-    return payments[-1] if payments else {"amount": 0, "date": "—"}
-
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID:
+        await update.message.reply_text("لوحة المدير", reply_markup=admin_keyboard())
+    else:
+        await update.message.reply_text("مرحبا بك في بوت المياه")
 
 def get_next_serial():
     if not data["subscribers"]:
         return "1"
+    nums=[int(x) for x in data["subscribers"].keys()]
+    return str(max(nums)+1)
 
-    nums = [int(x) for x in data["subscribers"].keys() if x.isdigit()]
-    return str(max(nums) + 1)
+async def add_subscriber_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    serial=get_next_serial()
+    context.user_data["serial"]=serial
+    await update.message.reply_text(f"الرقم التسلسلي: {serial}\nاكتب اسم المشترك")
+    return ADD_NAME
 
+async def add_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["name"]=update.message.text
+    await update.message.reply_text("اكتب رقم العداد")
+    return ADD_METER
 
-# ───────── العميل ─────────
+async def add_meter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["meter"]=update.message.text
+    await update.message.reply_text("اكتب المنطقة")
+    return ADD_AREA
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-
-    if user_id in data["clients"]:
-        await update.message.reply_text("مرحباً بك", reply_markup=client_keyboard())
-        return ConversationHandler.END
-
-    await update.message.reply_text("أدخل الرقم التسلسلي:")
-    return CLIENT_ENTER_SERIAL
-
-
-async def client_enter_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["serial"] = update.message.text
-    await update.message.reply_text("أدخل رقم العداد:")
-    return CLIENT_ENTER_SUB
-
-
-async def client_enter_sub(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    serial = context.user_data["serial"]
-
-    data["clients"][str(update.effective_user.id)] = {
-        "serial": serial,
-        "sub_number": update.message.text,
+async def add_area(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    serial=context.user_data["serial"]
+    data["subscribers"][serial]={
+        "name":context.user_data["name"],
+        "meter":context.user_data["meter"],
+        "area":update.message.text
     }
-
     save_data(data)
-
-    await update.message.reply_text("تم الربط.", reply_markup=client_keyboard())
-
+    await update.message.reply_text("تمت إضافة المشترك",reply_markup=admin_keyboard())
     return ConversationHandler.END
 
-
-async def client_inquiry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    user_id = str(update.effective_user.id)
-
-    client = data["clients"].get(user_id)
-
-    if not client:
-        await update.message.reply_text("أرسل /start")
-        return
-
-    serial = client["serial"]
-
-    r = get_last_reading(serial)
-    p = get_last_payment(serial)
-
-    msg = (
-        f"التسلسلي: {serial}\n"
-        f"آخر قراءة: {r.get('curr')} بتاريخ {r.get('date')}\n"
-        f"آخر دفعة: {p.get('amount')} بتاريخ {p.get('date')}"
-    )
-
-    await update.message.reply_text(msg, reply_markup=client_keyboard())
-
-
-# ───────── المدير ─────────
-
-async def admin_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    admin_id = data["admin"].get("admin_id")
-
-    if admin_id is None:
-        await update.message.reply_text("أدخل ID المدير:")
-        return ADMIN_ENTER_ID
-
-    if update.effective_user.id != admin_id:
-        await update.message.reply_text("لا تملك صلاحية")
-        return ConversationHandler.END
-
-    await update.message.reply_text("لوحة المدير", reply_markup=admin_keyboard())
-    return ConversationHandler.END
-
-
-async def admin_enter_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if update.message.text == str(INITIAL_ADMIN_ID):
-
-        data["admin"]["admin_id"] = update.effective_user.id
-        save_data(data)
-
-        await update.message.reply_text("تم التفعيل", reply_markup=admin_keyboard())
-        return ConversationHandler.END
-
-    await update.message.reply_text("خطأ")
-    return ADMIN_ENTER_ID
-
-
-# ───────── تسجيل قراءة ─────────
-
-async def admin_add_reading_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("أدخل الرقم التسلسلي:")
-    return ADMIN_ADD_READING_SERIAL
-
-
-async def admin_add_reading_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["serial"] = update.message.text
-    await update.message.reply_text("أدخل القراءة:")
-    return ADMIN_ADD_READING_VALUE
-
-
-async def admin_add_reading_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    serial = context.user_data["serial"]
-    curr = int(update.message.text)
-
-    last = get_last_reading(serial)
-    prev = last["curr"]
-
-    units = curr - prev
-    amount = units * data["settings"]["price_per_unit"]
-
-    data["readings"].setdefault(serial, []).append(
-        {
-            "prev": prev,
-            "curr": curr,
-            "units": units,
-            "amount": amount,
-            "date": datetime.now().strftime("%Y-%m-%d"),
-        }
-    )
-
-    save_data(data)
-
-    await update.message.reply_text("تم تسجيل القراءة", reply_markup=admin_keyboard())
-    return ConversationHandler.END
-
-
-# ───────── تسجيل دفع ─────────
-
-async def admin_add_payment_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("أدخل الرقم التسلسلي:")
-    return ADMIN_ADD_PAYMENT_SERIAL
-
-
-async def admin_add_payment_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["serial"] = update.message.text
-    await update.message.reply_text("أدخل المبلغ:")
-    return ADMIN_ADD_PAYMENT_VALUE
-
-
-async def admin_add_payment_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    serial = context.user_data["serial"]
-    amount = int(update.message.text)
-
-    data["payments"].setdefault(serial, []).append(
-        {
-            "amount": amount,
-            "date": datetime.now().strftime("%Y-%m-%d"),
-        }
-    )
-
-    save_data(data)
-
-    await update.message.reply_text("تم تسجيل السداد", reply_markup=admin_keyboard())
-    return ConversationHandler.END
-
-
-# ───────── إضافة مشترك ─────────
-
-async def admin_add_sub_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    serial = get_next_serial()
-    context.user_data["serial"] = serial
-
-    await update.message.reply_text(f"التسلسلي الجديد {serial}\nأدخل اسم المشترك:")
-
-    return ADMIN_ADD_SUB_NAME
-
-
-async def admin_add_sub_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    context.user_data["name"] = update.message.text
-
-    await update.message.reply_text("أدخل رقم العداد:")
-
-    return ADMIN_ADD_SUB_METER
-
-
-async def admin_add_sub_meter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    context.user_data["meter"] = update.message.text
-
-    await update.message.reply_text("أدخل المنطقة:")
-
-    return ADMIN_ADD_SUB_AREA
-
-
-async def admin_add_sub_area(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    serial = context.user_data["serial"]
-
-    data["subscribers"][serial] = {
-        "name": context.user_data["name"],
-        "meter": context.user_data["meter"],
-        "area": update.message.text,
-    }
-
-    save_data(data)
-
-    await update.message.reply_text("تم إضافة المشترك", reply_markup=admin_keyboard())
-
-    return ConversationHandler.END
-
-
-# ───────── تعديل المنطقة ─────────
-
-async def admin_edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    await update.message.reply_text("أدخل الرقم التسلسلي للمشترك:")
-
-    return ADMIN_EDIT_SERIAL
-
-
-async def admin_edit_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    serial = update.message.text
-
+async def edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("أدخل الرقم التسلسلي للمشترك")
+    return EDIT_SERIAL
+
+async def edit_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    serial=update.message.text
     if serial not in data["subscribers"]:
         await update.message.reply_text("المشترك غير موجود")
         return ConversationHandler.END
+    context.user_data["serial"]=serial
+    await update.message.reply_text("أدخل المنطقة الجديدة")
+    return EDIT_AREA
 
-    context.user_data["serial"] = serial
-
-    await update.message.reply_text("أدخل المنطقة الجديدة:")
-
-    return ADMIN_EDIT_AREA
-
-
-async def admin_edit_area(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    serial = context.user_data["serial"]
-
-    data["subscribers"][serial]["area"] = update.message.text
-
+async def edit_area(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    serial=context.user_data["serial"]
+    data["subscribers"][serial]["area"]=update.message.text
     save_data(data)
+    await update.message.reply_text("تم تعديل المنطقة",reply_markup=admin_keyboard())
+    return ConversationHandler.END
 
-    await update.message.reply_text("تم تعديل المنطقة", reply_markup=admin_keyboard())
+async def search_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("أدخل الرقم التسلسلي للمشترك")
+    return SEARCH_SERIAL
+
+async def search_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    serial = update.message.text
+
+    if serial not in data["subscribers"]:
+        await update.message.reply_text("المشترك غير موجود",reply_markup=admin_keyboard())
+        return ConversationHandler.END
+
+    sub=data["subscribers"][serial]
+    name=sub["name"]
+    area=sub["area"]
+
+    keyboard=[
+        [KeyboardButton("📥 قراءة"),KeyboardButton("💰 دافع")],
+        [KeyboardButton("📢 إرسال رسالة")],
+        [KeyboardButton("⬅️ رجوع")]
+    ]
+
+    await update.message.reply_text(
+        f"المشترك:\nالاسم: {name}\nالمنطقة: {area}\nالرقم: {serial}\n\nاختر العملية",
+        reply_markup=ReplyKeyboardMarkup(keyboard,resize_keyboard=True)
+    )
 
     return ConversationHandler.END
 
+async def show_subscriber(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text="قائمة المشتركين:\n\n"
+    for s,v in data["subscribers"].items():
+        text+=f"{s} - {v['name']} - {v['area']}\n"
+    await update.message.reply_text(text)
 
-# ───────── MAIN ─────────
+async def show_area(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    areas={}
+    for s,v in data["subscribers"].items():
+        areas.setdefault(v["area"],[]).append(v["name"])
+
+    text="كشف المناطق:\n"
+    for a,n in areas.items():
+        text+=f"\n{a}\n"
+        for name in n:
+            text+=f"- {name}\n"
+
+    await update.message.reply_text(text)
+
+async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    txt=update.message.text
+
+    if txt=="📊 كشف مشترك":
+        await show_subscriber(update,context)
+
+    elif txt=="📍 كشف منطقة":
+        await show_area(update,context)
+
+    elif txt=="📋 كشف رئيسي":
+        await show_subscriber(update,context)
+
+    elif txt=="📢 إرسال رسالة":
+        await update.message.reply_text("ميزة إرسال الرسائل يمكن ربطها لاحقاً")
+
+    elif txt=="📥 تسجيل قراءة":
+        await update.message.reply_text("ميزة تسجيل القراءة يمكن إضافتها لاحقاً")
+
+    elif txt=="💰 تسجيل دفع":
+        await update.message.reply_text("ميزة تسجيل الدفع يمكن إضافتها لاحقاً")
+
+    elif txt=="⬅️ رجوع":
+        await update.message.reply_text("لوحة المدير",reply_markup=admin_keyboard())
 
 def main():
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app=ApplicationBuilder().token(BOT_TOKEN).build()
 
-    client_conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+    add_conv=ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^➕ مشترك جديد$"),add_subscriber_start)],
         states={
-            CLIENT_ENTER_SERIAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, client_enter_serial)],
-            CLIENT_ENTER_SUB: [MessageHandler(filters.TEXT & ~filters.COMMAND, client_enter_sub)],
+            ADD_NAME:[MessageHandler(filters.TEXT & ~filters.COMMAND,add_name)],
+            ADD_METER:[MessageHandler(filters.TEXT & ~filters.COMMAND,add_meter)],
+            ADD_AREA:[MessageHandler(filters.TEXT & ~filters.COMMAND,add_area)],
         },
-        fallbacks=[],
+        fallbacks=[]
     )
 
-    admin_conv = ConversationHandler(
-        entry_points=[CommandHandler("admin", admin_entry)],
+    edit_conv=ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^✏️ تعديل$"),edit_start)],
         states={
-            ADMIN_ENTER_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_enter_id)],
-            ADMIN_ADD_READING_SERIAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_reading_serial)],
-            ADMIN_ADD_READING_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_reading_value)],
-            ADMIN_ADD_PAYMENT_SERIAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_payment_serial)],
-            ADMIN_ADD_PAYMENT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_payment_value)],
-            ADMIN_ADD_SUB_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_sub_name)],
-            ADMIN_ADD_SUB_METER: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_sub_meter)],
-            ADMIN_ADD_SUB_AREA: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_sub_area)],
-            ADMIN_EDIT_SERIAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_edit_serial)],
-            ADMIN_EDIT_AREA: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_edit_area)],
+            EDIT_SERIAL:[MessageHandler(filters.TEXT & ~filters.COMMAND,edit_serial)],
+            EDIT_AREA:[MessageHandler(filters.TEXT & ~filters.COMMAND,edit_area)],
         },
-        fallbacks=[],
+        fallbacks=[]
     )
 
-    app.add_handler(client_conv)
-    app.add_handler(admin_conv)
+    search_conv=ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^🔍 بحث$"),search_start)],
+        states={
+            SEARCH_SERIAL:[MessageHandler(filters.TEXT & ~filters.COMMAND,search_serial)]
+        },
+        fallbacks=[]
+    )
 
-    app.add_handler(MessageHandler(filters.Regex("^📌 استعلام$"), client_inquiry))
+    app.add_handler(CommandHandler("start",start))
+    app.add_handler(add_conv)
+    app.add_handler(edit_conv)
+    app.add_handler(search_conv)
 
-    app.add_handler(MessageHandler(filters.Regex("^📥 تسجيل قراءة$"), admin_add_reading_start))
-    app.add_handler(MessageHandler(filters.Regex("^💰 تسجيل دفع$"), admin_add_payment_start))
-
-    app.add_handler(MessageHandler(filters.Regex("^➕ مشترك جديد$"), admin_add_sub_start))
-    app.add_handler(MessageHandler(filters.Regex("^✏️ تعديل$"), admin_edit_start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,main_menu))
 
     app.run_polling()
 
-
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
