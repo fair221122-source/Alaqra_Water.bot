@@ -1,537 +1,473 @@
+# -*- coding: utf-8 -*-
 import json
 import os
 from datetime import datetime
-
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+)
 from telegram.ext import (
-    ApplicationBuilder,
+    Application,
     CommandHandler,
     MessageHandler,
-    ContextTypes,
     ConversationHandler,
-    filters
+    ContextTypes,
+    filters,
 )
 
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table
 from reportlab.lib.styles import getSampleStyleSheet
 
+# =========================================
+# ضع التوكن والادمن هنا
+# =========================================
 
-# =========================
-# ضع التوكن هنا
-# =========================
-BOT_TOKEN = "8090667485:AAGCgIlZPEB069W_bhpIr0HBdp20GpfCCPI"
-
-# =========================
-# ضع رقم المدير هنا
-# =========================
+TOKEN = "8090667485:AAGCgIlZPEB069W_bhpIr0HBdp20GpfCCPI"
 ADMIN_ID = 986199874
 
-
-DATA_FILE = "data.json"
 UNIT_PRICE = 500
 
+DATA_DIR = "data"
+SUBS_FILE = os.path.join(DATA_DIR, "subscribers.json")
+READ_FILE = os.path.join(DATA_DIR, "readings.json")
+PAY_FILE = os.path.join(DATA_DIR, "payments.json")
+LINK_FILE = os.path.join(DATA_DIR, "links.json")
 
-ASK_SERIAL = 1
+REGIONS = [
+    "الحمراء",
+    "الجبوبة",
+    "عرض الجبل",
+    "شمضات",
+    "حظي",
+    "الوادي",
+    "بيع مباشر",
+]
 
-PAY_ID = 10
-PAY_AMOUNT = 11
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
 
-READ_ID = 20
-READ_VALUE = 21
+# =========================================
+# تحميل / حفظ البيانات
+# =========================================
 
-NEW_NAME = 40
-NEW_AREA = 41
-NEW_METER = 42
-
-FROM_DATE = 60
-TO_DATE = 61
-
-
-def load_data():
-
-    if not os.path.exists(DATA_FILE):
-        return {"subscribers": {}, "last_id": 0}
-
-    with open(DATA_FILE, "r", encoding="utf8") as f:
+def load_json(path):
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def save_data(data):
-
-    with open(DATA_FILE, "w", encoding="utf8") as f:
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def get_subscribers():
+    return load_json(SUBS_FILE)
+
+
+def save_subscribers(data):
+    save_json(SUBS_FILE, data)
+
+
+def get_readings():
+    return load_json(READ_FILE)
+
+
+def save_readings(data):
+    save_json(READ_FILE, data)
+
+
+def get_payments():
+    return load_json(PAY_FILE)
+
+
+def save_payments(data):
+    save_json(PAY_FILE, data)
+
+
+def get_links():
+    return load_json(LINK_FILE)
+
+
+def save_links(data):
+    save_json(LINK_FILE, data)
+
+
+# =========================================
+# لوحات المفاتيح
+# =========================================
+
 def admin_keyboard():
-
     kb = [
-        ["💰 تسجيل دفع", "📥 تسجيل قراءة"],
-        ["➕ مشترك جديد"]
+        ["💰 تسجيل دفع", "📥 تسجيل قراءة", "📨 إرسال رسالة"],
+        ["📊 كشف رئيسي", "📍 كشف منطقة", "👤 كشف مشترك"],
+        ["➕ مشترك جديد", "✏️ تعديل مشترك"],
     ]
-
     return ReplyKeyboardMarkup(kb, resize_keyboard=True)
 
 
 def subscriber_keyboard():
-
-    kb = [
-        ["📌 استعلام", "📄 كشف حساب"]
-    ]
-
+    kb = [["📌 استعلام", "📄 كشف حساب"]]
     return ReplyKeyboardMarkup(kb, resize_keyboard=True)
 
 
+# =========================================
+# حساب المتأخرات
+# =========================================
+
+def subscriber_balance(serial):
+    readings = get_readings()
+    payments = get_payments()
+
+    total = sum(r["amount"] for r in readings if r["serial"] == serial)
+    paid = sum(p["amount"] for p in payments if p["serial"] == serial)
+
+    return total - paid
+
+
+# =========================================
+# /start
+# =========================================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user.id
 
-    if update.effective_user.id == ADMIN_ID:
-
+    if user == ADMIN_ID:
         await update.message.reply_text(
-            "لوحة المدير",
-            reply_markup=admin_keyboard()
+            "لوحة المدير", reply_markup=admin_keyboard()
         )
+    else:
+        await update.message.reply_text("أدخل الرقم التسلسلي للمشترك:")
 
+
+# =========================================
+# تسجيل دفع
+# =========================================
+
+PAY_SERIAL, PAY_AMOUNT = range(2)
+
+
+async def pay_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("أدخل الرقم التسلسلي للمشترك:")
+    return PAY_SERIAL
+
+
+async def pay_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    serial = update.message.text.strip()
+
+    subs = get_subscribers()
+    sub = next((s for s in subs if s["serial"] == serial), None)
+
+    if not sub:
+        await update.message.reply_text("المشترك غير موجود")
         return ConversationHandler.END
 
-    await update.message.reply_text(
-        "أدخل الرقم التسلسلي للمشترك لربط حسابك"
+    context.user_data["serial"] = serial
+    context.user_data["name"] = sub["name"]
+
+    await update.message.reply_text(f"اسم المشترك: {sub['name']}\nأدخل المبلغ:")
+    return PAY_AMOUNT
+
+
+async def pay_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    amount = float(update.message.text)
+
+    serial = context.user_data["serial"]
+
+    payments = get_payments()
+    payments.append(
+        {
+            "serial": serial,
+            "amount": amount,
+            "date": datetime.now().strftime("%Y-%m-%d"),
+        }
     )
 
-    return ASK_SERIAL
+    save_payments(payments)
 
+    links = get_links()
+    chat = next((l["chat_id"] for l in links if l["serial"] == serial), None)
 
-async def link_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = f"""
+سند قبض
 
-    serial = update.message.text
+تم استلام مبلغ وقدره {amount} ريال يمني
+وذلك جزء من استهلاك المياه الخاصة بكم
 
-    data = load_data()
-
-    if serial not in data["subscribers"]:
-
-        await update.message.reply_text("الرقم غير موجود")
-
-        return ASK_SERIAL
-
-    sub = data["subscribers"][serial]
-
-    sub["chat_id"] = update.effective_user.id
-
-    save_data(data)
-
-    text = f"""
-تم ربط الحساب
-
-الاسم: {sub['name']}
-المنطقة: {sub['area']}
-رقم العداد: {sub['meter']}
+إدارة المشروع
 """
 
-    await update.message.reply_text(
-        text,
-        reply_markup=subscriber_keyboard()
-    )
+    if chat:
+        await context.bot.send_message(chat_id=chat, text=msg)
 
+    await update.message.reply_text("تم تسجيل الدفع", reply_markup=admin_keyboard())
     return ConversationHandler.END
 
 
-# ========================
+# =========================================
 # تسجيل قراءة
-# ========================
+# =========================================
 
-async def read_start(update, context):
-
-    await update.message.reply_text("أدخل الرقم التسلسلي")
-
-    return READ_ID
+READ_SERIAL, READ_VALUE = range(2)
 
 
-async def read_id(update, context):
+async def read_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("أدخل الرقم التسلسلي للمشترك:")
+    return READ_SERIAL
 
-    context.user_data["sub_id"] = update.message.text
 
-    await update.message.reply_text("أدخل القراءة الحالية")
+async def read_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    serial = update.message.text
 
+    subs = get_subscribers()
+    sub = next((s for s in subs if s["serial"] == serial), None)
+
+    if not sub:
+        await update.message.reply_text("غير موجود")
+        return ConversationHandler.END
+
+    context.user_data["serial"] = serial
+
+    readings = get_readings()
+    prev = 0
+    user_reads = [r for r in readings if r["serial"] == serial]
+
+    if user_reads:
+        prev = user_reads[-1]["current"]
+
+    context.user_data["prev"] = prev
+
+    await update.message.reply_text(f"القراءة السابقة: {prev}\nأدخل القراءة الحالية:")
     return READ_VALUE
 
 
-async def read_value(update, context):
+async def read_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    current = int(update.message.text)
 
-    value = int(update.message.text)
+    prev = context.user_data["prev"]
+    serial = context.user_data["serial"]
 
-    sub_id = context.user_data["sub_id"]
-
-    data = load_data()
-
-    sub = data["subscribers"][sub_id]
-
-    prev = sub.get("last_read", 0)
-
-    diff = value - prev
-
+    diff = current - prev
     amount = diff * UNIT_PRICE
 
-    sub["last_read"] = value
+    readings = get_readings()
 
-    sub["arrears"] = sub.get("arrears", 0) + amount
+    readings.append(
+        {
+            "serial": serial,
+            "prev": prev,
+            "current": current,
+            "usage": diff,
+            "amount": amount,
+            "date": datetime.now().strftime("%Y-%m-%d"),
+        }
+    )
 
-    if "readings" not in sub:
-        sub["readings"] = []
+    save_readings(readings)
 
-    sub["readings"].append({
-        "date": str(datetime.now().date()),
-        "consumption": diff,
-        "amount": amount
-    })
-
-    save_data(data)
+    balance = subscriber_balance(serial)
 
     msg = f"""
-عزيزي المشترك
+عزيزي المشترك ...
 
 تم تسجيل قراءة العداد
 
 الاستهلاك: {diff} وحدة
 سعر الوحدة: {UNIT_PRICE} ريال يمني
-قيمة الاستهلاك: {amount}
+عليكم فاتورة ب {amount} ريال يمني
+المبلغ المستحق {balance} ريال يمني
 
-المبلغ المستحق: {sub['arrears']}
+إدارة المشروع
 """
 
-    if "chat_id" in sub:
+    links = get_links()
+    chat = next((l["chat_id"] for l in links if l["serial"] == serial), None)
 
-        await context.bot.send_message(
-            sub["chat_id"],
-            msg
-        )
+    if chat:
+        await context.bot.send_message(chat_id=chat, text=msg)
 
-    await update.message.reply_text(
-        "تم تسجيل القراءة",
-        reply_markup=admin_keyboard()
-    )
+    await update.message.reply_text("تم تسجيل القراءة", reply_markup=admin_keyboard())
 
     return ConversationHandler.END
 
 
-# ========================
-# تسجيل دفع
-# ========================
-
-async def pay_start(update, context):
-
-    await update.message.reply_text("أدخل الرقم التسلسلي")
-
-    return PAY_ID
-
-
-async def pay_id(update, context):
-
-    context.user_data["sub_id"] = update.message.text
-
-    await update.message.reply_text("أدخل المبلغ")
-
-    return PAY_AMOUNT
-
-
-async def pay_amount(update, context):
-
-    amount = int(update.message.text)
-
-    sub_id = context.user_data["sub_id"]
-
-    data = load_data()
-
-    sub = data["subscribers"][sub_id]
-
-    prev = sub.get("arrears", 0)
-
-    new = max(prev - amount, 0)
-
-    sub["arrears"] = new
-
-    if "payments" not in sub:
-        sub["payments"] = []
-
-    sub["payments"].append({
-        "date": str(datetime.now().date()),
-        "amount": amount
-    })
-
-    save_data(data)
-
-    msg = f"""
-عزيزي المشترك
-
-تم استلام مبلغ
-
-المبلغ المسدد: {amount}
-
-المتبقي: {new}
-"""
-
-    if "chat_id" in sub:
-
-        await context.bot.send_message(
-            sub["chat_id"],
-            msg
-        )
-
-    await update.message.reply_text(
-        "تم تسجيل الدفع",
-        reply_markup=admin_keyboard()
-    )
-
-    return ConversationHandler.END
-
-
-# ========================
-# استعلام المشترك
-# ========================
-
-async def subscriber_status(update, context):
-
-    data = load_data()
-
-    uid = update.effective_user.id
-
-    for sub in data["subscribers"].values():
-
-        if sub.get("chat_id") == uid:
-
-            text = f"""
-آخر وضع مالي
-
-الاسم: {sub['name']}
-المنطقة: {sub['area']}
-رقم العداد: {sub['meter']}
-
-المتأخرات: {sub.get('arrears',0)} ريال
-"""
-
-            await update.message.reply_text(text)
-
-            return
-
-
-# ========================
-# كشف حساب PDF
-# ========================
-
-async def statement_start(update, context):
-
-    await update.message.reply_text("أدخل الفترة من (يوم/شهر/سنة)")
-
-    return FROM_DATE
-
-
-async def statement_from(update, context):
-
-    context.user_data["from"] = update.message.text
-
-    await update.message.reply_text("إلى")
-
-    return TO_DATE
-
-
-async def statement_to(update, context):
-
-    from_date = context.user_data["from"]
-
-    to_date = update.message.text
-
-    data = load_data()
-
-    uid = update.effective_user.id
-
-    for sid, sub in data["subscribers"].items():
-
-        if sub.get("chat_id") == uid:
-
-            file = f"statement_{sid}.pdf"
-
-            styles = getSampleStyleSheet()
-
-            story = []
-
-            story.append(Paragraph("كشف حساب المشترك", styles['Title']))
-            story.append(Spacer(1, 20))
-
-            story.append(Paragraph(f"الاسم: {sub['name']}", styles['Normal']))
-            story.append(Paragraph(f"المنطقة: {sub['area']}", styles['Normal']))
-            story.append(Paragraph(f"رقم العداد: {sub['meter']}", styles['Normal']))
-
-            story.append(Spacer(1, 20))
-
-            readings = sub.get("readings", [])
-            payments = sub.get("payments", [])
-
-            r_table = [["التاريخ", "الاستهلاك", "القيمة"]]
-
-            for r in readings:
-                r_table.append([r["date"], r["consumption"], r["amount"]])
-
-            p_table = [["التاريخ", "المبلغ"]]
-
-            for p in payments:
-                p_table.append([p["date"], p["amount"]])
-
-            story.append(Paragraph("القراءات", styles['Heading2']))
-            story.append(Table(r_table))
-
-            story.append(Spacer(1, 20))
-
-            story.append(Paragraph("السداد", styles['Heading2']))
-            story.append(Table(p_table))
-
-            story.append(Spacer(1, 20))
-
-            story.append(
-                Paragraph(
-                    f"المتأخرات الكلية: {sub.get('arrears',0)}",
-                    styles['Heading2']
-                )
-            )
-
-            pdf = SimpleDocTemplate(file)
-
-            pdf.build(story)
-
-            await update.message.reply_document(open(file, "rb"))
-
-            return ConversationHandler.END
-
-
-# ========================
+# =========================================
 # إضافة مشترك
-# ========================
+# =========================================
 
-async def new_sub(update, context):
+NEW_NAME, NEW_REGION, NEW_METER = range(3)
 
-    await update.message.reply_text("أدخل اسم المشترك")
 
+async def new_sub(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("أدخل اسم المشترك:")
     return NEW_NAME
 
 
-async def new_name(update, context):
-
+async def new_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["name"] = update.message.text
-
-    await update.message.reply_text("أدخل المنطقة")
-
-    return NEW_AREA
+    await update.message.reply_text("أدخل المنطقة:")
+    return NEW_REGION
 
 
-async def new_area(update, context):
-
-    context.user_data["area"] = update.message.text
-
-    await update.message.reply_text("أدخل رقم العداد")
-
+async def new_region(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["region"] = update.message.text
+    await update.message.reply_text("أدخل رقم العداد:")
     return NEW_METER
 
 
-async def new_meter(update, context):
-
+async def new_meter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     meter = update.message.text
 
-    data = load_data()
+    subs = get_subscribers()
 
-    new_id = str(data["last_id"] + 1)
+    serial = str(len(subs) + 1)
 
-    data["subscribers"][new_id] = {
-        "name": context.user_data["name"],
-        "area": context.user_data["area"],
-        "meter": meter,
-        "arrears": 0,
-        "last_read": 0
-    }
+    subs.append(
+        {
+            "serial": serial,
+            "name": context.user_data["name"],
+            "region": context.user_data["region"],
+            "meter": meter,
+        }
+    )
 
-    data["last_id"] += 1
-
-    save_data(data)
+    save_subscribers(subs)
 
     await update.message.reply_text(
-        f"تم إضافة مشترك رقم {new_id}",
-        reply_markup=admin_keyboard()
+        f"تم إضافة مشترك برقم تسلسلي {serial}", reply_markup=admin_keyboard()
     )
 
     return ConversationHandler.END
 
 
+# =========================================
+# استعلام المشترك
+# =========================================
+
+async def subscriber_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    serial = update.message.text
+
+    subs = get_subscribers()
+    sub = next((s for s in subs if s["serial"] == serial), None)
+
+    if not sub:
+        await update.message.reply_text("الرقم غير موجود")
+        return
+
+    links = get_links()
+    links.append({"serial": serial, "chat_id": update.effective_user.id})
+    save_links(links)
+
+    await update.message.reply_text(
+        f"""
+تم ربط الحساب
+
+الاسم: {sub['name']}
+المنطقة: {sub['region']}
+رقم العداد: {sub['meter']}
+""",
+        reply_markup=subscriber_keyboard(),
+    )
+
+
+# =========================================
+# كشف PDF
+# =========================================
+
+async def statement(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    links = get_links()
+    chat = update.effective_user.id
+    link = next((l for l in links if l["chat_id"] == chat), None)
+
+    if not link:
+        await update.message.reply_text("لم يتم ربط الحساب")
+        return
+
+    serial = link["serial"]
+
+    readings = [r for r in get_readings() if r["serial"] == serial]
+    payments = [p for p in get_payments() if p["serial"] == serial]
+
+    file = f"statement_{serial}.pdf"
+
+    styles = getSampleStyleSheet()
+
+    elements = []
+
+    elements.append(Paragraph("كشف حساب المشترك", styles["Title"]))
+    elements.append(Spacer(1, 20))
+
+    data = [["التاريخ", "القراءة", "الاستهلاك", "المبلغ"]]
+
+    for r in readings:
+        data.append([r["date"], r["current"], r["usage"], r["amount"]])
+
+    table = Table(data)
+    elements.append(table)
+
+    elements.append(Spacer(1, 20))
+
+    pay_data = [["التاريخ", "المبلغ"]]
+
+    for p in payments:
+        pay_data.append([p["date"], p["amount"]])
+
+    elements.append(Table(pay_data))
+
+    doc = SimpleDocTemplate(file)
+    doc.build(elements)
+
+    await update.message.reply_document(open(file, "rb"))
+
+
+# =========================================
+# main
+# =========================================
+
 def main():
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = Application.builder().token(TOKEN).build()
 
-
-    start_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+    pay_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^💰 تسجيل دفع$"), pay_start)],
         states={
-            ASK_SERIAL: [MessageHandler(filters.TEXT, link_account)]
+            PAY_SERIAL: [MessageHandler(filters.TEXT, pay_serial)],
+            PAY_AMOUNT: [MessageHandler(filters.TEXT, pay_amount)],
         },
-        fallbacks=[]
+        fallbacks=[],
     )
 
-
-    read_handler = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.TEXT & filters.Regex("^📥 تسجيل قراءة$"), read_start)
-        ],
+    read_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^📥 تسجيل قراءة$"), read_start)],
         states={
-            READ_ID: [MessageHandler(filters.TEXT, read_id)],
-            READ_VALUE: [MessageHandler(filters.TEXT, read_value)]
+            READ_SERIAL: [MessageHandler(filters.TEXT, read_serial)],
+            READ_VALUE: [MessageHandler(filters.TEXT, read_value)],
         },
-        fallbacks=[]
+        fallbacks=[],
     )
 
-
-    pay_handler = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.TEXT & filters.Regex("^💰 تسجيل دفع$"), pay_start)
-        ],
-        states={
-            PAY_ID: [MessageHandler(filters.TEXT, pay_id)],
-            PAY_AMOUNT: [MessageHandler(filters.TEXT, pay_amount)]
-        },
-        fallbacks=[]
-    )
-
-
-    statement_handler = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.TEXT & filters.Regex("^📄 كشف حساب$"), statement_start)
-        ],
-        states={
-            FROM_DATE: [MessageHandler(filters.TEXT, statement_from)],
-            TO_DATE: [MessageHandler(filters.TEXT, statement_to)]
-        },
-        fallbacks=[]
-    )
-
-
-    new_handler = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.TEXT & filters.Regex("^➕ مشترك جديد$"), new_sub)
-        ],
+    new_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^➕ مشترك جديد$"), new_sub)],
         states={
             NEW_NAME: [MessageHandler(filters.TEXT, new_name)],
-            NEW_AREA: [MessageHandler(filters.TEXT, new_area)],
-            NEW_METER: [MessageHandler(filters.TEXT, new_meter)]
+            NEW_REGION: [MessageHandler(filters.TEXT, new_region)],
+            NEW_METER: [MessageHandler(filters.TEXT, new_meter)],
         },
-        fallbacks=[]
+        fallbacks=[],
     )
 
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(pay_conv)
+    app.add_handler(read_conv)
+    app.add_handler(new_conv)
 
-    app.add_handler(start_handler)
-    app.add_handler(read_handler)
-    app.add_handler(pay_handler)
-    app.add_handler(statement_handler)
-    app.add_handler(new_handler)
+    app.add_handler(MessageHandler(filters.Regex("^📄 كشف حساب$"), statement))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, subscriber_link))
 
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & filters.Regex("^📌 استعلام$"),
-            subscriber_status
-        )
-    )
-
+    print("BOT STARTED")
 
     app.run_polling()
 
