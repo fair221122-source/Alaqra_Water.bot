@@ -924,7 +924,6 @@ def main():
     app.add_handler(client_conv)
     app.add_handler(admin_conv)
 # أزرار العميل
-if last_r:
     lines.append(
         f"آخر قراءة: {last_r['curr']} بتاريخ {last_r['date']} | مبلغ {last_r['amount']}"
     )
