@@ -1394,7 +1394,6 @@ async def admin_text_router(
         if d < user_data["stmt_from_date"]:
             await update.message.reply_text("تاريخ النهاية يجب أن يكون بعد تاريخ البداية.")
             return
-
 from_date = user_data["stmt_from_date"]
 user_data["stmt_to_date"] = d
 sub_id = user_data.get("stmt_sub_id")
@@ -1417,11 +1416,7 @@ await update.message.reply_document(
 
 await update.message.reply_text(
     "تم إرسال كشف الحساب."
-)
-
-await update.message.reply_text(
-    "تم إرسال كشف الحساب."
-)
+        )
 # ============ توجيه رسائل المدير ============
 async def admin_text_router(
     update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: str
