@@ -1414,12 +1414,587 @@ async def admin_text_router(
             caption="كشف حساب المشترك (PDF).",
         )
         await update.message.reply_text(
+# ============ توجيه رسائل المدير ============
+async def admin_text_router(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: str
+):
+    user_data = context.user_data
+
+    # زر إلغاء العملية يعمل في أي وقت
+    if text == "إلغاء العملية":
+        user_data.clear()
+        user_data[STATE_KEY] = STATE_NONE
+        await update.message.reply_text(
+            "تم إلغاء العملية والعودة إلى لوحة المدير.",
+            reply_markup=admin_keyboard(),
+        )
+        return
+
+    # لوحات الأزرار الرئيسية
+    if state == STATE_NONE:
+        if text == "مشترك جديد":
+            serial = get_next_serial()
+            user_data["new_sub_serial"] = serial
+            await update.message.reply_text(
+                f"إنشاء مشترك جديد.\nالرقم التسلسلي المقترح: {serial}\n"
+                "الرجاء إدخال اسم المشترك (رباعي أو خماسي):",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_NEW_SUB_NAME
+            return
+
+        if text == "تعديل مشترك":
+            await update.message.reply_text(
+                "الرجاء إدخال رقم المشترك الذي تريد تعديله:",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_EDIT_SUB_WAIT_ACCOUNT
+            return
+
+        if text == "تسجيل قراءة":
+            await update.message.reply_text(
+                "الرجاء إدخال رقم المشترك لتسجيل القراءة:",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_READ_WAIT_ACCOUNT
+            return
+
+        if text == "تسجيل دفع":
+            await update.message.reply_text(
+                "الرجاء إدخال رقم المشترك لتسجيل الدفع:",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_PAY_WAIT_ACCOUNT
+            return
+
+        if text == "كشف مشترك":
+            await update.message.reply_text(
+                "الرجاء إدخال رقم المشترك للاستعلام:",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_INQ_WAIT_ACCOUNT
+            return
+
+        if text == "كشف منطقة":
+            areas = get_all_areas()
+            if not areas:
+                await update.message.reply_text(
+                    "لا توجد مناطق مسجلة بعد.", reply_markup=admin_keyboard()
+                )
+                return
+            buttons = [
+                [InlineKeyboardButton(a[1], callback_data=f"area_{a[0]}")]
+                for a in areas
+            ]
+            await update.message.reply_text(
+                "اختر المنطقة:",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_AREA_CHOOSE
+            return
+
+        if text == "كشف رئيسي":
+            await update.message.reply_text(
+                "أدخل تاريخ البداية بصيغة يوم/شهر/سنة (مثال: 01/01/2026):",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_MAIN_WAIT_FROM
+            return
+
+        if text == "إرسال رسالة":
+            buttons = [
+                [
+                    InlineKeyboardButton("عامة", callback_data="msg_type_general"),
+                    InlineKeyboardButton("منطقة", callback_data="msg_type_area"),
+                    InlineKeyboardButton("مشترك", callback_data="msg_type_sub"),
+                ]
+            ]
+            await update.message.reply_text(
+                "اختر نوع الرسالة:", reply_markup=InlineKeyboardMarkup(buttons)
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_MSG_TYPE
+            return
+
+        if text == "إغلاق سنوي":
+            buttons = [
+                [
+                    InlineKeyboardButton("موافق", callback_data="annual_ok"),
+                    InlineKeyboardButton("إلغاء", callback_data="annual_cancel"),
+                ]
+            ]
+            await update.message.reply_text(
+                "هل أنت متأكد من تنفيذ الإغلاق السنوي؟",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+            user_data[STATE_KEY] = STATE_ADMIN_ANNUAL_CONFIRM
+            return
+
+        # أي نص آخر
+        await update.message.reply_text(
+            "اختر من لوحة المدير أو استخدم الأوامر المتاحة.",
+            reply_markup=admin_keyboard(),
+        )
+        return
+
+    # مشترك جديد: إدخال الاسم
+    if state == STATE_ADMIN_NEW_SUB_NAME:
+        user_data["new_sub_name"] = text
+        await update.message.reply_text("الرجاء إدخال رقم المشترك (رقم العداد):")
+        user_data[STATE_KEY] = STATE_ADMIN_NEW_SUB_ACCOUNT
+        return
+
+    # مشترك جديد: إدخال رقم المشترك
+    if state == STATE_ADMIN_NEW_SUB_ACCOUNT:
+        user_data["new_sub_account"] = text
+        await update.message.reply_text("الرجاء إدخال اسم المنطقة:")
+        user_data[STATE_KEY] = STATE_ADMIN_NEW_SUB_AREA
+        return
+
+    # مشترك جديد: إدخال المنطقة
+    if state == STATE_ADMIN_NEW_SUB_AREA:
+        serial = user_data.get("new_sub_serial")
+        name = user_data.get("new_sub_name")
+        account_no = user_data.get("new_sub_account")
+        area_name = text
+        create_subscriber(serial, account_no, name, area_name)
+        await update.message.reply_text(
+            "تم حفظ المشترك الجديد بنجاح.\n"
+            f"الرقم التسلسلي: {serial}\n"
+            f"رقم المشترك: {account_no}\n"
+            f"الاسم: {name}\n"
+            f"المنطقة: {area_name}",
+            reply_markup=admin_keyboard(),
+        )
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # تعديل مشترك: إدخال رقم المشترك
+    if state == STATE_ADMIN_EDIT_SUB_WAIT_ACCOUNT:
+        sub = find_subscriber_by_account(text)
+        if not sub:
+            await update.message.reply_text(
+                "لم يتم العثور على مشترك بهذا الرقم.", reply_markup=admin_keyboard()
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+        user_data["edit_sub_id"] = sub[0]
+        info = format_subscriber_info(sub)
+        buttons = [
+            [
+                InlineKeyboardButton("تعديل الاسم", callback_data="edit_name"),
+                InlineKeyboardButton("تعديل المنطقة", callback_data="edit_area"),
+            ]
+        ]
+        await update.message.reply_text(
+            "بيانات المشترك:\n\n" + info + "\nاختر ما تريد تعديله:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+        user_data[STATE_KEY] = STATE_ADMIN_EDIT_SUB_CHOICE
+        return
+
+    # تعديل مشترك: إدخال اسم جديد
+    if state == STATE_ADMIN_EDIT_SUB_NEW_NAME:
+        sub_id = user_data.get("edit_sub_id")
+        update_subscriber(sub_id, name=text)
+        await update.message.reply_text(
+            "تم تعديل الاسم بنجاح.", reply_markup=admin_keyboard()
+        )
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # تعديل مشترك: إدخال منطقة جديدة
+    if state == STATE_ADMIN_EDIT_SUB_NEW_AREA:
+        sub_id = user_data.get("edit_sub_id")
+        update_subscriber(sub_id, area_name=text)
+        await update.message.reply_text(
+            "تم تعديل المنطقة بنجاح.", reply_markup=admin_keyboard()
+        )
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # تسجيل قراءة: إدخال رقم المشترك
+    if state == STATE_ADMIN_READ_WAIT_ACCOUNT:
+        sub = find_subscriber_by_account(text)
+        if not sub:
+            await update.message.reply_text(
+                "لم يتم العثور على مشترك بهذا الرقم.", reply_markup=admin_keyboard()
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+        user_data["read_sub_id"] = sub[0]
+        await update.message.reply_text("الرجاء إدخال آخر قراءة (رقم العداد الحالي):")
+        user_data[STATE_KEY] = STATE_ADMIN_READ_WAIT_VALUE
+        return
+
+    # تسجيل قراءة: إدخال القراءة
+    if state == STATE_ADMIN_READ_WAIT_VALUE:
+        try:
+            curr_read = int(text)
+        except ValueError:
+            await update.message.reply_text("الرجاء إدخال رقم صحيح للقراءة.")
+            return
+        sub_id = user_data.get("read_sub_id")
+        sub = find_subscriber_by_id(sub_id)
+        prev_read, units, unit_price, amount = add_reading(sub_id, curr_read)
+        user_data["read_curr"] = curr_read
+        user_data["read_prev"] = prev_read
+        user_data["read_units"] = units
+        user_data["read_unit_price"] = unit_price
+        user_data["read_amount"] = amount
+
+        info = format_subscriber_info(sub)
+        text_msg = (
+            "تسجيل قراءة جديدة:\n\n"
+            + info
+            + f"القراءة السابقة: {prev_read}\n"
+            f"القراءة الحالية: {curr_read}\n"
+            f"فارق القراءات (وحدات): {units}\n"
+            f"سعر الوحدة: {unit_price}\n"
+            f"قيمة الاستهلاك: {amount}\n\n"
+            "هل تريد حفظ هذه القراءة؟"
+        )
+        buttons = [
+            [
+                InlineKeyboardButton("حفظ", callback_data="read_save"),
+                InlineKeyboardButton("تعديل", callback_data="read_edit"),
+            ]
+        ]
+        await update.message.reply_text(
+            text_msg, reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        user_data[STATE_KEY] = STATE_ADMIN_READ_CONFIRM
+        return
+
+    # تسجيل دفع: إدخال رقم المشترك
+    if state == STATE_ADMIN_PAY_WAIT_ACCOUNT:
+        sub = find_subscriber_by_account(text)
+        if not sub:
+            await update.message.reply_text(
+                "لم يتم العثور على مشترك بهذا الرقم.", reply_markup=admin_keyboard()
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+        user_data["pay_sub_id"] = sub[0]
+        await update.message.reply_text("الرجاء إدخال مبلغ الدفع:")
+        user_data[STATE_KEY] = STATE_ADMIN_PAY_WAIT_AMOUNT
+        return
+
+    # تسجيل دفع: إدخال المبلغ
+    if state == STATE_ADMIN_PAY_WAIT_AMOUNT:
+        try:
+            amount = int(text)
+        except ValueError:
+            await update.message.reply_text("الرجاء إدخال مبلغ صحيح (أرقام فقط).")
+            return
+        user_data["pay_amount"] = amount
+        sub_id = user_data.get("pay_sub_id")
+        sub = find_subscriber_by_id(sub_id)
+        info = format_subscriber_info(sub)
+        msg = (
+            "تسجيل دفع جديد:\n\n"
+            + info
+            + f"المبلغ: {amount}\n\n"
+            "هل تريد حفظ هذه العملية؟"
+        )
+        buttons = [
+            [
+                InlineKeyboardButton("حفظ", callback_data="pay_save"),
+                InlineKeyboardButton("تعديل", callback_data="pay_edit"),
+            ]
+        ]
+        await update.message.reply_text(
+            msg, reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        user_data[STATE_KEY] = STATE_ADMIN_PAY_CONFIRM
+        return
+
+    # كشف مشترك: إدخال رقم المشترك
+    if state == STATE_ADMIN_INQ_WAIT_ACCOUNT:
+        sub = find_subscriber_by_account(text)
+        if not sub:
+            await update.message.reply_text(
+                "لم يتم العثور على مشترك بهذا الرقم.", reply_markup=admin_keyboard()
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+        sub_id = sub[0]
+        info = format_subscriber_status(sub_id)
+        buttons = [
+            [
+                InlineKeyboardButton("إرسال للمشترك", callback_data=f"inq_send_{sub_id}"),
+                InlineKeyboardButton("تجاهل", callback_data="inq_ignore"),
+            ]
+        ]
+        await update.message.reply_text(
+            info, reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # كشف منطقة: إدخال تاريخ البداية/النهاية
+    if state == STATE_ADMIN_AREA_WAIT_FROM:
+        d = parse_date_str(text)
+        if not d:
+            await update.message.reply_text(
+                "صيغة التاريخ غير صحيحة. مثال صحيح: 01/01/2026"
+            )
+            return
+        user_data["area_from_date"] = d
+        await update.message.reply_text(
+            "أدخل تاريخ النهاية بصيغة يوم/شهر/سنة (مثال: 10/03/2026):"
+        )
+        user_data[STATE_KEY] = STATE_ADMIN_AREA_WAIT_TO
+        return
+
+    if state == STATE_ADMIN_AREA_WAIT_TO:
+        d = parse_date_str(text)
+        if not d:
+            await update.message.reply_text(
+                "صيغة التاريخ غير صحيحة. مثال صحيح: 10/03/2026"
+            )
+            return
+        if d < user_data["area_from_date"]:
+            await update.message.reply_text("تاريخ النهاية يجب أن يكون بعد تاريخ البداية.")
+            return
+
+        user_data["area_to_date"] = d
+        area_id = user_data.get("area_id")
+        total_c, total_p, bal = get_area_summary(
+            area_id, user_data["area_from_date"], user_data["area_to_date"]
+        )
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT name FROM areas WHERE id=?", (area_id,))
+        area_name = c.fetchone()[0]
+        conn.close()
+
+        msg = (
+            f"كشف منطقة: {area_name}\n"
+            f"الفترة: من {user_data['area_from_date']} إلى {user_data['area_to_date']}\n\n"
+            f"إجمالي الاستهلاك (مبلغ): {total_c}\n"
+            f"إجمالي المدفوع: {total_p}\n"
+            f"إجمالي المتأخرات: {bal}"
+        )
+
+        filename = f"area_{area_id}_{datetime.utcnow().timestamp()}.pdf"
+        generate_area_or_global_pdf(
+            filename,
+            f"كشف منطقة: {area_name}",
+            user_data["area_from_date"],
+            user_data["area_to_date"],
+            total_c,
+            total_p,
+            bal,
+        )
+
+        await update.message.reply_text(msg, reply_markup=admin_keyboard())
+        await update.message.reply_document(
+            document=InputFile(filename, filename=os.path.basename(filename)),
+            caption="ملف كشف المنطقة (PDF).",
+        )
+        finalize_pdf_file(filename)
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # كشف رئيسي: إدخال تاريخ البداية/النهاية
+    if state == STATE_ADMIN_MAIN_WAIT_FROM:
+        d = parse_date_str(text)
+        if not d:
+            await update.message.reply_text(
+                "صيغة التاريخ غير صحيحة. مثال صحيح: 01/01/2026"
+            )
+            return
+        user_data["main_from_date"] = d
+        await update.message.reply_text(
+            "أدخل تاريخ النهاية بصيغة يوم/شهر/سنة (مثال: 10/03/2026):"
+        )
+        user_data[STATE_KEY] = STATE_ADMIN_MAIN_WAIT_TO
+        return
+
+    if state == STATE_ADMIN_MAIN_WAIT_TO:
+        d = parse_date_str(text)
+        if not d:
+            await update.message.reply_text(
+                "صيغة التاريخ غير صحيحة. مثال صحيح: 10/03/2026"
+            )
+            return
+        if d < user_data["main_from_date"]:
+            await update.message.reply_text("تاريخ النهاية يجب أن يكون بعد تاريخ البداية.")
+            return
+
+        user_data["main_to_date"] = d
+        total_c, total_p, bal = get_global_summary(
+            user_data["main_from_date"], user_data["main_to_date"]
+        )
+        msg = (
+            "كشف رئيسي لجميع المناطق:\n"
+            f"الفترة: من {user_data['main_from_date']} إلى {user_data['main_to_date']}\n\n"
+            f"إجمالي الاستهلاك (مبلغ): {total_c}\n"
+            f"إجمالي المدفوع: {total_p}\n"
+            f"إجمالي المتأخرات: {bal}"
+        )
+
+        filename = f"main_{datetime.utcnow().timestamp()}.pdf"
+        generate_area_or_global_pdf(
+            filename,
+            "كشف رئيسي لجميع المناطق",
+            user_data["main_from_date"],
+            user_data["main_to_date"],
+            total_c,
+            total_p,
+            bal,
+        )
+
+        await update.message.reply_text(msg, reply_markup=admin_keyboard())
+        await update.message.reply_document(
+            document=InputFile(filename, filename=os.path.basename(filename)),
+            caption="ملف الكشف الرئيسي (PDF).",
+        )
+        finalize_pdf_file(filename)
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # إرسال رسالة: إدخال نص الرسالة
+    if state == STATE_ADMIN_MSG_TEXT:
+        msg_type = user_data.get("msg_type")
+        text_msg = text
+
+        if msg_type == "general":
+            conn = get_conn()
+            c = conn.cursor()
+            c.execute("SELECT chat_id FROM subscribers WHERE chat_id IS NOT NULL")
+            chats = [row[0] for row in c.fetchall()]
+            conn.close()
+            for ch in chats:
+                try:
+                    await context.bot.send_message(chat_id=ch, text=text_msg)
+                except Exception:
+                    pass
+            log_message("general", "all", text_msg)
+            await update.message.reply_text(
+                "تم إرسال الرسالة العامة لجميع المشتركين.",
+                reply_markup=admin_keyboard(),
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+
+        if msg_type == "area":
+            area_ids = user_data.get("msg_area_ids", [])
+            if not area_ids:
+                await update.message.reply_text(
+                    "لم يتم اختيار أي منطقة.", reply_markup=admin_keyboard()
+                )
+                user_data[STATE_KEY] = STATE_NONE
+                return
+            conn = get_conn()
+            c = conn.cursor()
+            for aid in area_ids:
+                c.execute(
+                    "SELECT chat_id FROM subscribers WHERE area_id=? AND chat_id IS NOT NULL",
+                    (aid,),
+                )
+                chats = [row[0] for row in c.fetchall()]
+                for ch in chats:
+                    try:
+                        await context.bot.send_message(chat_id=ch, text=text_msg)
+                    except Exception:
+                        pass
+            conn.close()
+            log_message("area", ",".join(map(str, area_ids)), text_msg)
+            await update.message.reply_text(
+                "تم إرسال الرسالة للمناطق المحددة.", reply_markup=admin_keyboard()
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+
+        if msg_type == "sub":
+            sub_id = user_data.get("msg_sub_id")
+            sub = find_subscriber_by_id(sub_id)
+            if not sub or not sub[5]:
+                await update.message.reply_text(
+                    "لا يوجد قناة مرتبطة بهذا المشترك.", reply_markup=admin_keyboard()
+                )
+                user_data[STATE_KEY] = STATE_NONE
+                return
+            try:
+                await context.bot.send_message(chat_id=sub[5], text=text_msg)
+            except Exception:
+                pass
+            log_message("subscriber", str(sub_id), text_msg)
+            await update.message.reply_text(
+                "تم إرسال الرسالة للمشترك.", reply_markup=admin_keyboard()
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+
+    # كشف حساب مشترك من جهة المدير
+    if state == STATE_ADMIN_SUB_STATEMENT_WAIT_ACCOUNT:
+        sub = find_subscriber_by_account(text)
+        if not sub:
+            await update.message.reply_text(
+                "لم يتم العثور على مشترك بهذا الرقم.", reply_markup=admin_keyboard()
+            )
+            user_data[STATE_KEY] = STATE_NONE
+            return
+        user_data["stmt_sub_id"] = sub[0]
+        await update.message.reply_text(
+            "أدخل تاريخ البداية بصيغة يوم/شهر/سنة (مثال: 01/01/2026):"
+        )
+        user_data[STATE_KEY] = STATE_ADMIN_SUB_STATEMENT_WAIT_FROM
+        return
+
+    if state == STATE_ADMIN_SUB_STATEMENT_WAIT_FROM:
+        d = parse_date_str(text)
+        if not d:
+            await update.message.reply_text(
+                "صيغة التاريخ غير صحيحة. مثال صحيح: 01/01/2026"
+            )
+            return
+        user_data["stmt_from_date"] = d
+        await update.message.reply_text(
+            "أدخل تاريخ النهاية بصيغة يوم/شهر/سنة (مثال: 10/03/2026):"
+        )
+        user_data[STATE_KEY] = STATE_ADMIN_SUB_STATEMENT_WAIT_TO
+        return
+
+    if state == STATE_ADMIN_SUB_STATEMENT_WAIT_TO:
+        d = parse_date_str(text)
+        if not d:
+            await update.message.reply_text(
+                "صيغة التاريخ غير صحيحة. مثال صحيح: 10/03/2026"
+            )
+            return
+        if d < user_data["stmt_from_date"]:
+            await update.message.reply_text("تاريخ النهاية يجب أن يكون بعد تاريخ البداية.")
+            return
+
+        user_data["stmt_to_date"] = d
+        sub_id = user_data.get("stmt_sub_id")
+        sub = find_subscriber_by_id(sub_id)
+        readings, payments = get_subscriber_statement(
+            sub_id, user_data["stmt_from_date"], user_data["stmt_to_date"]
+        )
+        filename = f"statement_{sub_id}_{datetime.utcnow().timestamp()}.pdf"
+        generate_statement_pdf(
+            filename,
+            sub,
+            user_data["stmt_from_date"],
+            user_data["stmt_to_date"],
+            readings,
+            payments,
+        )
+        await update.message.reply_document(
+            document=InputFile(filename, filename=os.path.basename(filename)),
+            caption="كشف حساب المشترك (PDF).",
+        )
+        finalize_pdf_file(filename)
+        await update.message.reply_text(
             "تم إرسال كشف الحساب.", reply_markup=admin_keyboard()
         )
         user_data[STATE_KEY] = STATE_NONE
         return
 
-    # ===================== إغلاق سنوي: إدخال كلمة السر =====================
+    # إغلاق سنوي: إدخال كلمة السر
     if state == STATE_ADMIN_ANNUAL_PASSWORD:
         if text != ANNUAL_CLOSE_PASSWORD:
             await update.message.reply_text(
@@ -1431,17 +2006,19 @@ async def admin_text_router(
 
         filename = f"annual_{datetime.utcnow().timestamp()}.pdf"
         generate_annual_pdf(filename)
+
         await update.message.reply_document(
             document=InputFile(filename, filename=os.path.basename(filename)),
             caption="تقرير الإغلاق السنوي (PDF).",
         )
+        finalize_pdf_file(filename)
         await update.message.reply_text(
             "تم تنفيذ الإغلاق السنوي بنجاح.", reply_markup=admin_keyboard()
         )
         user_data[STATE_KEY] = STATE_NONE
         return
 
-    # ===================== حالة غير معروفة =====================
+    # في حال لم تُطابق أي حالة
     await update.message.reply_text(
         "لم أفهم هذا الإدخال في هذه المرحلة.\nاستخدم الأزرار أو زر 'إلغاء العملية' للبدء من جديد.",
         reply_markup=admin_keyboard(),
