@@ -92,18 +92,17 @@ def init_db():
     )
 
     c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS subscribers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            serial INTEGER UNIQUE NOT NULL,
-            account_no TEXT NOT NULL UNIQUE,
-            name TEXT Nimport threading
-threading.Thread(target=keep_bot_alive, daemon=True).start()OT NULL,
-            area_id INTEGER,
-            chat_id INTEGER,
-            created_at TEXT,
-            FOREIGN KEY(area_id) REFERENCES areas(id)
-        )
+    """
+    CREATE TABLE IF NOT EXISTS subscribers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        serial INTEGER UNIQUE NOT NULL,
+        account_no TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        area_id INTEGER,
+        chat_id INTEGER,
+        created_at TEXT,
+        FOREIGN KEY(area_id) REFERENCES areas(id)
+    )
     """
     )
 
