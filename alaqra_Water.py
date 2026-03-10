@@ -1363,13 +1363,15 @@ if state == STATE_ADMIN_SUB_STATEMENT_WAIT_ACCOUNT:
         )
         user_data[STATE_KEY] = STATE_NONE
         return
+
     user_data["stmt_sub_id"] = sub[0]
+
     await update.message.reply_text(
         "أدخل تاريخ البداية بصيغة يوم/شهر/سنة (مثال: 01/01/2026):"
     )
+
     user_data[STATE_KEY] = STATE_ADMIN_SUB_STATEMENT_WAIT_FROM
     return
-
 if state == STATE_ADMIN_SUB_STATEMENT_WAIT_FROM:
     d = parse_date_str(text)
     if not d:
