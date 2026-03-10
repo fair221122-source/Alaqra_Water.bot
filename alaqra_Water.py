@@ -41,7 +41,7 @@ from telegram.ext import (
 # ============ إعدادات أساسية ============
 TOKEN = os.getenv("BOT_TOKEN", "8090667485:AAGCgIlZPEB069W_bhpIr0HBdp20GpfCCPI")
 
-DB_PATH = "water_project.db"
+DB_PATH = os.path.join(os.path.dirname(__file__), "water_project.db")
 UNIT_PRICE_DEFAULT = 500  # ريال يمني
 ANNUAL_CLOSE_PASSWORD = os.getenv("ANNUAL_CLOSE_PASSWORD", "09092009")
 
