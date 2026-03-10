@@ -1410,10 +1410,13 @@ async def admin_text_router(
             (sub, readings, payments),
         )
         await update.message.reply_document(
-            document=InputFile(filename, filename=os.path.basename(filename)),
-            caption="كشف حساب المشترك (PDF).",
-        )
-        await update.message.reply_text(
+    document=InputFile(filename, filename=os.path.basename(filename)),
+    caption="كشف حساب المشترك (PDF).",
+)
+
+await update.message.reply_text(
+    "تم إرسال كشف الحساب."
+)
 # ============ توجيه رسائل المدير ============
 async def admin_text_router(
     update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: str
