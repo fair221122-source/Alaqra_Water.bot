@@ -633,8 +633,7 @@ def generate_statement_pdf(
             y = height - 50
             c.setFont("Helvetica", 9)
 
-    c.showPage()
-    c.save()
+    force_save_pdf(c)
 
 
 def generate_area_or_global_pdf(
@@ -665,8 +664,7 @@ def generate_area_or_global_pdf(
     c.drawString(50, y, f"إجمالي المتأخرات: {balance}")
     y -= 20
 
-    c.showPage()
-    c.save()
+    force_save_pdf(c)
 
 
 def generate_annual_pdf(filename: str):
