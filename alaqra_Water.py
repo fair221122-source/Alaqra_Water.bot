@@ -741,12 +741,20 @@ def admin_keyboard():
         ["كشف رئيسي", "إرسال رسالة"],
         ["إغلاق سنوي"],
     ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True,
+        one_time_keyboard=False
+    )
 
 
 def subscriber_keyboard():
     keyboard = [["استعلام", "كشف حساب"]]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True,
+        one_time_keyboard=False
+    )
 
 
 # ============ حالات المستخدم ============
