@@ -1304,7 +1304,7 @@ async def admin_text_router(
             document=InputFile(filename, filename=os.path.basename(filename)),
             caption="ملف كشف المنطقة (PDF).",
         )
-        os.remove(filename)
+        finalize_pdf_file(filename)
         user_data[STATE_KEY] = STATE_NONE
         return
 
@@ -1352,7 +1352,7 @@ async def admin_text_router(
             document=InputFile(filename, filename=os.path.basename(filename)),
             caption="ملف الكشف الرئيسي (PDF).",
         )
-        os.remove(filename)
+        finalize_pdf_file(filename)
         user_data[STATE_KEY] = STATE_NONE
         return
 
@@ -1483,7 +1483,7 @@ async def admin_text_router(
             document=InputFile(filename, filename=os.path.basename(filename)),
             caption="كشف حساب المشترك (PDF).",
         )
-        os.remove(filename)
+        finalize_pdf_file(filename)
         await update.message.reply_text(
             "تم إرسال كشف الحساب.", reply_markup=admin_keyboard()
         )
