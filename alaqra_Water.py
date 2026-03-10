@@ -1354,69 +1354,70 @@ async def admin_text_router(
             user_data[STATE_KEY] = STATE_NONE
             return
 
-    # ===================== كشف حساب مشترك من جهة المدير =====================
-    if state == STATE_ADMIN_SUB_STATEMENT_WAIT_ACCOUNT:
-        sub = find_subscriber_by_account(text)
-        if not sub:
-            await update.message.reply_text(
-                "لم يتم العثور على مشترك بهذا الرقم.", reply_markup=admin_keyboard()
-            )
-            user_data[STATE_KEY] = STATE_NONE
-            return
-        user_data["stmt_sub_id"] = sub[0]
+# ===================== كشف حساب مشترك من جهة المدير =====================
+if state == STATE_ADMIN_SUB_STATEMENT_WAIT_ACCOUNT:
+    sub = find_subscriber_by_account(text)
+    if not sub:
         await update.message.reply_text(
-            "أدخل تاريخ البداية بصيغة يوم/شهر/سنة (مثال: 01/01/2026):"
+            "لم يتم العثور على مشترك بهذا الرقم.", reply_markup=admin_keyboard()
         )
-        user_data[STATE_KEY] = STATE_ADMIN_SUB_STATEMENT_WAIT_FROM
+        user_data[STATE_KEY] = STATE_NONE
+        return
+    user_data["stmt_sub_id"] = sub[0]
+    await update.message.reply_text(
+        "أدخل تاريخ البداية بصيغة يوم/شهر/سنة (مثال: 01/01/2026):"
+    )
+    user_data[STATE_KEY] = STATE_ADMIN_SUB_STATEMENT_WAIT_FROM
+    return
+
+if state == STATE_ADMIN_SUB_STATEMENT_WAIT_FROM:
+    d = parse_date_str(text)
+    if not d:
+        await update.message.reply_text(
+            "صيغة التاريخ غير صحيحة. مثال صحيح: 01/01/2026"
+        )
+        return
+    user_data["stmt_from_date"] = d
+    await update.message.reply_text(
+        "أدخل تاريخ النهاية بصيغة يوم/شهر/سنة (مثال: 10/03/2026):"
+    )
+    user_data[STATE_KEY] = STATE_ADMIN_SUB_STATEMENT_WAIT_TO
+    return
+
+if state == STATE_ADMIN_SUB_STATEMENT_WAIT_TO:
+    d = parse_date_str(text)
+    if not d:
+        await update.message.reply_text(
+            "صيغة التاريخ غير صحيحة. مثال صحيح: 10/03/2026"
+        )
+        return
+    if d < user_data["stmt_from_date"]:
+        await update.message.reply_text("تاريخ النهاية يجب أن يكون بعد تاريخ البداية.")
         return
 
-    if state == STATE_ADMIN_SUB_STATEMENT_WAIT_FROM:
-        d = parse_date_str(text)
-        if not d:
-            await update.message.reply_text(
-                "صيغة التاريخ غير صحيحة. مثال صحيح: 01/01/2026"
-            )
-            return
-        user_data["stmt_from_date"] = d
-        await update.message.reply_text(
-            "أدخل تاريخ النهاية بصيغة يوم/شهر/سنة (مثال: 10/03/2026):"
-        )
-        user_data[STATE_KEY] = STATE_ADMIN_SUB_STATEMENT_WAIT_TO
-        return
+    from_date = user_data["stmt_from_date"]
+    user_data["stmt_to_date"] = d
+    sub_id = user_data.get("stmt_sub_id")
+    sub = find_subscriber_by_id(sub_id)
+    readings, payments = get_subscriber_statement(sub_id, from_date, d)
 
-    if state == STATE_ADMIN_SUB_STATEMENT_WAIT_TO:
-        d = parse_date_str(text)
-        if not d:
-            await update.message.reply_text(
-                "صيغة التاريخ غير صحيحة. مثال صحيح: 10/03/2026"
-            )
-            return
-        if d < user_data["stmt_from_date"]:
-            await update.message.reply_text("تاريخ النهاية يجب أن يكون بعد تاريخ البداية.")
-            return
-from_date = user_data["stmt_from_date"]
-user_data["stmt_to_date"] = d
-sub_id = user_data.get("stmt_sub_id")
-sub = find_subscriber_by_id(sub_id)
-readings, payments = get_subscriber_statement(sub_id, from_date, d)
+    filename = f"statement_{sub_id}_{datetime.utcnow().timestamp()}.pdf"
+    generate_pdf(
+        filename,
+        "subscriber",
+        from_date,
+        d,
+        (sub, readings, payments),
+    )
 
-filename = f"statement_{sub_id}_{datetime.utcnow().timestamp()}.pdf"
-generate_pdf(
-    filename,
-    "subscriber",
-    from_date,
-    d,
-    (sub, readings, payments),
-)
+    await update.message.reply_document(
+        document=InputFile(filename, filename=os.path.basename(filename)),
+        caption="كشف حساب المشترك (PDF).",
+    )
 
-await update.message.reply_document(
-    document=InputFile(filename, filename=os.path.basename(filename)),
-    caption="كشف حساب المشترك (PDF).",
-)
-
-await update.message.reply_text(
-    "تم إرسال كشف الحساب."
-        )
+    await update.message.reply_text(
+        "تم إرسال كشف الحساب."
+    )
 # ============ توجيه رسائل المدير ============
 async def admin_text_router(
     update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: str
