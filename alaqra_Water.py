@@ -1418,6 +1418,7 @@ if state == STATE_ADMIN_SUB_STATEMENT_WAIT_TO:
     await update.message.reply_text(
         "تم إرسال كشف الحساب."
     )
+    
 # ============ توجيه رسائل المدير ============
 async def admin_text_router(
     update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: str
