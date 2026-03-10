@@ -1395,23 +1395,28 @@ async def admin_text_router(
             await update.message.reply_text("تاريخ النهاية يجب أن يكون بعد تاريخ البداية.")
             return
 
-        from_date = user_data["stmt_from_date"]
-        user_data["stmt_to_date"] = d
-        sub_id = user_data.get("stmt_sub_id")
-        sub = find_subscriber_by_id(sub_id)
-        readings, payments = get_subscriber_statement(sub_id, from_date, d)
+from_date = user_data["stmt_from_date"]
+user_data["stmt_to_date"] = d
+sub_id = user_data.get("stmt_sub_id")
+sub = find_subscriber_by_id(sub_id)
+readings, payments = get_subscriber_statement(sub_id, from_date, d)
 
-        filename = f"statement_{sub_id}_{datetime.utcnow().timestamp()}.pdf"
-        generate_pdf(
-            filename,
-            "subscriber",
-            from_date,
-            d,
-            (sub, readings, payments),
-        )
-        await update.message.reply_document(
+filename = f"statement_{sub_id}_{datetime.utcnow().timestamp()}.pdf"
+generate_pdf(
+    filename,
+    "subscriber",
+    from_date,
+    d,
+    (sub, readings, payments),
+)
+
+await update.message.reply_document(
     document=InputFile(filename, filename=os.path.basename(filename)),
     caption="كشف حساب المشترك (PDF).",
+)
+
+await update.message.reply_text(
+    "تم إرسال كشف الحساب."
 )
 
 await update.message.reply_text(
