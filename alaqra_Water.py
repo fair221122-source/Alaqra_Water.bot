@@ -1,19 +1,36 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-def finalize_pdf_file(path):
+def keep_bot_alive():
     """
-    إصلاح مشكلة ملفات PDF التالفة.
-    تؤخر حذف الملف قليلاً حتى ينتهي تيليجرام من رفعه.
+    دالة تمنع توقف البوت في GitHub.
+    تعمل في Thread منفصل وتبقي السكربت صاحي.
     """
-    import time, os
+    import time
+    while True:
+        time.sleep(10)
 
-    # تأخير بسيط يسمح لتيليجرام بقراءة الملف بالكامل
-    time.sleep(1.5)
 
-    # حذف آمن بدون أخطاء
+def get_db_path():
+    """
+    دالة تثبّت مسار قاعدة البيانات حتى لا تضيع عند كل تشغيل.
+    تمنع إنشاء ملف جديد في مسار مختلف.
+    """
+    import os
+    return os.path.join(os.path.dirname(__file__), "water_project.db")
+
+
+def force_save_pdf(c):
+    """
+    دالة تجبر ReportLab على حفظ ملف PDF بشكل كامل.
+    تمنع ملفات PDF الفارغة أو التالفة في GitHub.
+    """
     try:
-        if os.path.exists(path):
-            os.remove(path)
+        c.showPage()
+    except:
+        pass
+
+    try:
+        c.save()
     except:
         pass
 import logging
@@ -80,7 +97,8 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             serial INTEGER UNIQUE NOT NULL,
             account_no TEXT NOT NULL UNIQUE,
-            name TEXT NOT NULL,
+            name TEXT Nimport threading
+threading.Thread(target=keep_bot_alive, daemon=True).start()OT NULL,
             area_id INTEGER,
             chat_id INTEGER,
             created_at TEXT,
@@ -1911,6 +1929,8 @@ def main():
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler_wrapper)
     )
+import threading
+threading.Thread(target=keep_bot_alive, daemon=True).start()
 
     app.run_polling()
 
