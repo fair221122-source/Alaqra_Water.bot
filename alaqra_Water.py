@@ -572,116 +572,165 @@ def log_message(msg_type: str, target: str, text: str):
     conn.close()
 
 
-# ============ توليد ملفات PDF بسيطة ============
+# ============ توليد ملفات PDF شاملة ============
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
-
-def generate_statement_pdf(
+def generate_pdf(
     filename: str,
-    subscriber,
+    report_type: str,   # subscriber | area | main
     from_date: date,
     to_date: date,
-    readings,
-    payments,
+    data,
+    totals=None,
 ):
+    """
+    data:
+        - subscriber report: (subscriber, readings, payments)
+        - area report: list of rows [name, account_no, paid, due]
+        - main report: list of rows [name, account_no, area, paid, due]
+
+    totals:
+        - {"paid": X, "due": Y}
+    """
+
     c = canvas.Canvas(filename, pagesize=A4)
     width, height = A4
     y = height - 50
 
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(50, y, "كشف حساب مشترك")
+    # ============ الترويسة ============
+    c.setFont("Helvetica-Bold", 16)
+    c.drawCentredString(width / 2, y, "مشروع مياة قرية بيت الأقرع الأهلي")
     y -= 30
 
-    c.setFont("Helvetica", 11)
-    c.drawString(50, y, f"الاسم: {subscriber[3]}")
-    y -= 20
-    c.drawString(50, y, f"الرقم التسلسلي: {subscriber[1]}")
-    y -= 20
-    c.drawString(50, y, f"رقم المشترك: {subscriber[2]}")
-    y -= 20
-    c.drawString(50, y, f"المنطقة: {subscriber[6] or '-'}")
-    y -= 20
-    c.drawString(50, y, f"الفترة: من {from_date} إلى {to_date}")
-    y -= 30
+    title_map = {
+        "subscriber": "كشف حساب مشترك",
+        "area": "كشف حساب منطقة",
+        "main": "كشف حساب رئيسي",
+    }
 
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, y, "القراءات:")
-    y -= 20
-    c.setFont("Helvetica", 9)
-    for r in readings:
-        line = f"تاريخ: {r[0][:10]} | سابقة: {r[1]} | حالية: {r[2]} | وحدات: {r[3]} | سعر: {r[4]} | مبلغ: {r[5]}"
-        c.drawString(50, y, line)
-        y -= 15
-        if y < 80:
-            c.showPage()
-            y = height - 50
-            c.setFont("Helvetica", 9)
+    c.drawCentredString(
+        width / 2,
+        y,
+        f"{title_map.get(report_type, '')} للفترة من {from_date} إلى {to_date}"
+    )
+    y -= 40
 
-    y -= 20
+    # ============ محتوى التقرير ============
+    if report_type == "subscriber":
+        subscriber, readings, payments = data
+
+        c.setFont("Helvetica", 11)
+        c.drawString(50, y, f"الاسم: {subscriber[3]}")
+        y -= 20
+        c.drawString(50, y, f"الرقم التسلسلي: {subscriber[1]}")
+        y -= 20
+        c.drawString(50, y, f"رقم المشترك: {subscriber[2]}")
+        y -= 20
+        c.drawString(50, y, f"المنطقة: {subscriber[6] or '-'}")
+        y -= 30
+
+        # القراءات
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(50, y, "القراءات:")
+        y -= 20
+
+        c.setFont("Helvetica", 9)
+        for r in readings:
+            line = (
+                f"تاريخ: {r[0][:10]} | سابقة: {r[1]} | حالية: {r[2]} | "
+                f"وحدات: {r[3]} | سعر: {r[4]} | مبلغ: {r[5]}"
+            )
+            c.drawString(50, y, line)
+            y -= 15
+            if y < 80:
+                c.showPage()
+                y = height - 50
+                c.setFont("Helvetica", 9)
+
+        # المدفوعات
+        y -= 20
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(50, y, "المدفوعات:")
+        y -= 20
+
+        c.setFont("Helvetica", 9)
+        for p in payments:
+            line = f"تاريخ: {p[0][:10]} | مبلغ: {p[1]}"
+            c.drawString(50, y, line)
+            y -= 15
+            if y < 80:
+                c.showPage()
+                y = height - 50
+                c.setFont("Helvetica", 9)
+
+    # ============ كشف المنطقة ============
+    elif report_type == "area":
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(50, y, "م | الاسم | رقم المشترك | المدفوع | المتأخرات")
+        y -= 15
+        c.drawString(50, y, "-" * 90)
+        y -= 20
+
+        c.setFont("Helvetica", 9)
+        counter = 1
+        for row in data:
+            name, acc, paid, due = row
+            line = f"{counter} | {name} | {acc} | {paid} | {due}"
+            c.drawString(50, y, line)
+            y -= 15
+            counter += 1
+
+            if y < 80:
+                c.showPage()
+                y = height - 50
+                c.setFont("Helvetica", 9)
+
+        # الإجماليات
+        y -= 20
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(50, y, f"إجمالي المدفوعات: {totals['paid']}")
+        y -= 20
+        c.drawString(50, y, f"إجمالي المتأخرات: {totals['due']}")
+
+    # ============ الكشف الرئيسي ============
+    elif report_type == "main":
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(50, y, "م | الاسم | رقم المشترك | المنطقة | المدفوع | المتأخرات")
+        y -= 15
+        c.drawString(50, y, "-" * 110)
+        y -= 20
+
+        c.setFont("Helvetica", 9)
+        counter = 1
+        for row in data:
+            name, acc, area, paid, due = row
+            line = f"{counter} | {name} | {acc} | {area} | {paid} | {due}"
+            c.drawString(50, y, line)
+            y -= 15
+            counter += 1
+
+            if y < 80:
+                c.showPage()
+                y = height - 50
+                c.setFont("Helvetica", 9)
+
+        # الإجماليات
+        y -= 20
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(50, y, f"إجمالي المدفوعات: {totals['paid']}")
+        y -= 20
+        c.drawString(50, y, f"إجمالي المتأخرات: {totals['due']}")
+
+    # ============ التذييل ============
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, y, "المدفوعات:")
-    y -= 20
-    c.setFont("Helvetica", 9)
-    for p in payments:
-        line = f"تاريخ: {p[0][:10]} | مبلغ: {p[1]}"
-        c.drawString(50, y, line)
-        y -= 15
-        if y < 80:
-            c.showPage()
-            y = height - 50
-            c.setFont("Helvetica", 9)
+    c.drawString(50, 50, "مدير المشروع/ صالح الطويل")
+    c.drawString(50, 30, "التوقيع/ ____________________")
 
-    force_save_pdf(c)
-
-
-def generate_area_or_global_pdf(
-    filename: str,
-    title: str,
-    from_date: date,
-    to_date: date,
-    total_consumption: int,
-    total_payments: int,
-    balance: int,
-):
-    c = canvas.Canvas(filename, pagesize=A4)
-    width, height = A4
-    y = height - 50
-
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(50, y, title)
-    y -= 30
-
-    c.setFont("Helvetica", 11)
-    c.drawString(50, y, f"الفترة: من {from_date} إلى {to_date}")
-    y -= 30
-
-    c.drawString(50, y, f"إجمالي الاستهلاك (مبلغ): {total_consumption}")
-    y -= 20
-    c.drawString(50, y, f"إجمالي المدفوع: {total_payments}")
-    y -= 20
-    c.drawString(50, y, f"إجمالي المتأخرات: {balance}")
-    y -= 20
-
-    force_save_pdf(c)
-
-
-def generate_annual_pdf(filename: str):
-    today = date.today()
-    from_date = date(today.year, 1, 1)
-    to_date = date(today.year, 12, 31)
-    total_consumption, total_payments, balance = get_global_summary(
-        from_date, to_date
-    )
-    generate_area_or_global_pdf(
-        filename,
-        f"تقرير سنوي شامل لسنة {today.year}",
-        from_date,
-        to_date,
-        total_consumption,
-        total_payments,
-        balance,
-    )
+    # ============ حفظ الملف ============
+    c.showPage()
+    c.save()
 
 
 # ============ لوحات المفاتيح ============
