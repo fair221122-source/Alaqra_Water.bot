@@ -586,6 +586,20 @@ def generate_pdf(
     data,
     totals=None,
 ):
+
+    # تسجيل الخط العربي داخل الدالة فقط
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    try:
+        pdfmetrics.registerFont(TTFont("Arabic", "Amiri-Regular.ttf"))
+    except:
+        pass
+
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    c = canvas.Canvas(filename, pagesize=A4)
+    
     """
     data:
         - subscriber report: (subscriber, readings, payments)
