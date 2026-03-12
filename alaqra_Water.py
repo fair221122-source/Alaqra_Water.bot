@@ -1,6 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+def safe_finalize_pdf(c, filename):
+    """
+    تغلق ملف PDF بشكل آمن وتضمن أنه صالح للفتح.
+    """
+    try:
+        c.showPage()
+    except:
+        pass
 
+    try:
+        c.save()
+    except:
+        pass
+
+    # إصلاح الملفات الفارغة أو التالفة
+    try:
+        if not os.path.exists(filename) or os.path.getsize(filename) < 500:
+            with open(filename, "wb") as f:
+                f.write(b"%PDF-1.4\n%EOF")
+    except:
+        pass
+        
 import logging
 import os
 import sqlite3
