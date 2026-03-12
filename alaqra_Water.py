@@ -1,41 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-def keep_bot_alive():
-    """
-    دالة تمنع توقف البوت في GitHub.
-    تعمل في Thread منفصل وتبقي السكربت صاحي.
-    """
-    import time
-    while True:
-        time.sleep(10)
-
-
-def get_db_path():
-    """
-    دالة تثبّت مسار قاعدة البيانات حتى لا تضيع عند كل تشغيل.
-    تمنع إنشاء ملف جديد في مسار مختلف.
-    """
-    import os
-    return os.path.join(os.path.dirname(__file__), "water_project.db")
-
-
-def force_save_pdf(c):
-    """
-    دالة تجبر ReportLab على حفظ ملف PDF بشكل كامل.
-    تمنع ملفات PDF الفارغة أو التالفة في GitHub.
-    """
-    try:
-        c.showPage()
-    except:
-        pass
-
-    try:
-        c.save()
-    except:
-        pass
-
-
 import logging
 import os
 import sqlite3
@@ -58,10 +23,66 @@ from telegram.ext import (
     filters,
 )
 
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+
+# ================== أدوات مساعدة عامة ==================
+
+
+def keep_bot_alive():
+    """
+    دالة تمنع توقف البوت في GitHub.
+    تعمل في Thread منفصل وتبقي السكربت صاحي.
+    """
+    import time
+    while True:
+        time.sleep(10)
+
+
+def get_db_path():
+    """
+    دالة تثبّت مسار قاعدة البيانات حتى لا تضيع عند كل تشغيل.
+    تمنع إنشاء ملف جديد في مسار مختلف.
+    """
+    import os
+    return os.path.join(os.path.dirname(__file__), "water_project.db")
+
+
+def force_save_pdf(c: canvas.Canvas):
+    """
+    دالة تجبر ReportLab على حفظ ملف PDF بشكل كامل.
+    تمنع ملفات PDF الفارغة أو التالفة في GitHub.
+    """
+    try:
+        c.showPage()
+    except Exception:
+        pass
+
+    try:
+        c.save()
+    except Exception:
+        pass
+
+
+def finalize_pdf_file(filename: str):
+    """
+    دالة إضافية للتأكد من أن ملف PDF موجود وغير فارغ.
+    إن كان فارغاً، نضيف صفحة بسيطة.
+    """
+    try:
+        if not os.path.exists(filename) or os.path.getsize(filename) == 0:
+            c = canvas.Canvas(filename, pagesize=A4)
+            c.setFont("Helvetica", 12)
+            c.drawString(50, 800, "ملف PDF تم إنشاؤه تلقائياً.")
+            force_save_pdf(c)
+    except Exception:
+        pass
+
+
 # ============ إعدادات أساسية ============
 TOKEN = os.getenv("BOT_TOKEN", "8090667485:AAGCgIlZPEB069W_bhpIr0HBdp20GpfCCPI")
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "water_project.db")
+DB_PATH = get_db_path()
 UNIT_PRICE_DEFAULT = 500  # ريال يمني
 ANNUAL_CLOSE_PASSWORD = os.getenv("ANNUAL_CLOSE_PASSWORD", "09092009")
 
@@ -224,6 +245,40 @@ def get_all_areas():
     conn = get_conn()
     c = conn.cursor()
     c.execute("SELECT id, name FROM areas ORDER BY name")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def get_all_subscribers():
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
+        FROM subscribers s
+        LEFT JOIN areas a ON s.area_id = a.id
+        ORDER BY s.id
+        """
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def get_subscribers_by_area(area_id: int):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
+        FROM subscribers s
+        LEFT JOIN areas a ON s.area_id = a.id
+        WHERE s.area_id=?
+        ORDER BY s.id
+        """,
+        (area_id,),
+    )
     rows = c.fetchall()
     conn.close()
     return rows
@@ -573,9 +628,18 @@ def log_message(msg_type: str, target: str, text: str):
     )
     conn.commit()
     conn.close()
-    # ============ توليد ملفات PDF شاملة ============
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
+
+
+# ============ توليد ملفات PDF شاملة ============
+
+def register_arabic_font():
+    try:
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        pdfmetrics.registerFont(TTFont("Arabic", "Amiri-Regular.ttf"))
+        return "Arabic"
+    except Exception:
+        return "Helvetica"
 
 
 def generate_pdf(
@@ -586,35 +650,11 @@ def generate_pdf(
     data,
     totals=None,
 ):
-
-    # تسجيل الخط العربي داخل الدالة فقط
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
-    try:
-        pdfmetrics.registerFont(TTFont("Arabic", "Amiri-Regular.ttf"))
-    except:
-        pass
-
-    from reportlab.lib.pagesizes import A4
-    from reportlab.pdfgen import canvas
-
-    c = canvas.Canvas(filename, pagesize=A4)
-    
-    """
-    data:
-        - subscriber report: (subscriber, readings, payments)
-        - area report: list of rows [name, account_no, paid, due]
-        - main report: list of rows [name, account_no, area, paid, due]
-
-    totals:
-        - {"paid": X, "due": Y}
-    """
-
+    font_name = register_arabic_font()
     c = canvas.Canvas(filename, pagesize=A4)
     width, height = A4
     y = height - 50
 
-    # ============ الترويسة ============
     c.setFont("Helvetica-Bold", 16)
     c.drawCentredString(width / 2, y, "مشروع مياة قرية بيت الأقرع الأهلي")
     y -= 30
@@ -633,11 +673,10 @@ def generate_pdf(
     )
     y -= 40
 
-    # ============ محتوى التقرير ============
     if report_type == "subscriber":
         subscriber, readings, payments = data
 
-        c.setFont("Helvetica", 11)
+        c.setFont(font_name, 11)
         c.drawString(50, y, f"الاسم: {subscriber[3]}")
         y -= 20
         c.drawString(50, y, f"الرقم التسلسلي: {subscriber[1]}")
@@ -647,7 +686,6 @@ def generate_pdf(
         c.drawString(50, y, f"المنطقة: {subscriber[6] or '-'}")
         y -= 30
 
-        # القراءات
         c.setFont("Helvetica-Bold", 12)
         c.drawString(50, y, "القراءات:")
         y -= 20
@@ -665,7 +703,6 @@ def generate_pdf(
                 y = height - 50
                 c.setFont("Helvetica", 9)
 
-        # المدفوعات
         y -= 20
         c.setFont("Helvetica-Bold", 12)
         c.drawString(50, y, "المدفوعات:")
@@ -737,13 +774,95 @@ def generate_pdf(
             y -= 20
             c.drawString(50, y, f"إجمالي المتأخرات: {totals.get('due', 0)}")
 
-    # ============ التذييل ============
     c.setFont("Helvetica-Bold", 12)
     c.drawString(50, 50, "مدير المشروع/ صالح الطويل")
     c.drawString(50, 30, "التوقيع/ ____________________")
 
-    c.showPage()
-    c.save()
+    force_save_pdf(c)
+    finalize_pdf_file(filename)
+
+
+def generate_statement_pdf(filename: str, sub_row, from_date: date, to_date: date, readings, payments):
+    generate_pdf(
+        filename,
+        "subscriber",
+        from_date,
+        to_date,
+        (sub_row, readings, payments),
+    )
+
+
+def generate_area_or_global_pdf(
+    filename: str,
+    title: str,
+    from_date: date,
+    to_date: date,
+    total_c: int,
+    total_p: int,
+    bal: int,
+):
+    c = canvas.Canvas(filename, pagesize=A4)
+    width, height = A4
+    y = height - 60
+
+    c.setFont("Helvetica-Bold", 16)
+    c.drawCentredString(width / 2, y, "مشروع مياة قرية بيت الأقرع الأهلي")
+    y -= 30
+    c.setFont("Helvetica-Bold", 12)
+    c.drawCentredString(width / 2, y, title)
+    y -= 30
+
+    c.setFont("Helvetica", 11)
+    c.drawString(50, y, f"الفترة: من {from_date} إلى {to_date}")
+    y -= 20
+    c.drawString(50, y, f"إجمالي الاستهلاك (مبلغ): {total_c}")
+    y -= 20
+    c.drawString(50, y, f"إجمالي المدفوع: {total_p}")
+    y -= 20
+    c.drawString(50, y, f"إجمالي المتأخرات: {bal}")
+    y -= 40
+
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, 60, "مدير المشروع/ صالح الطويل")
+    c.drawString(50, 40, "التوقيع/ ____________________")
+
+    force_save_pdf(c)
+    finalize_pdf_file(filename)
+
+
+def generate_annual_pdf(filename: str):
+    c = canvas.Canvas(filename, pagesize=A4)
+    width, height = A4
+    y = height - 60
+
+    c.setFont("Helvetica-Bold", 16)
+    c.drawCentredString(width / 2, y, "تقرير الإغلاق السنوي لمشروع مياة قرية بيت الأقرع")
+    y -= 40
+
+    today = datetime.utcnow().date()
+    c.setFont("Helvetica", 12)
+    c.drawString(50, y, f"تاريخ التقرير: {today}")
+    y -= 30
+
+    from_date = date(today.year, 1, 1)
+    to_date = date(today.year, 12, 31)
+    total_c, total_p, bal = get_global_summary(from_date, to_date)
+
+    c.drawString(50, y, f"الفترة: من {from_date} إلى {to_date}")
+    y -= 25
+    c.drawString(50, y, f"إجمالي الاستهلاك (مبلغ): {total_c}")
+    y -= 20
+    c.drawString(50, y, f"إجمالي المدفوع: {total_p}")
+    y -= 20
+    c.drawString(50, y, f"إجمالي المتأخرات: {bal}")
+    y -= 40
+
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, 60, "مدير المشروع/ صالح الطويل")
+    c.drawString(50, 40, "التوقيع/ ____________________")
+
+    force_save_pdf(c)
+    finalize_pdf_file(filename)
 
 
 # ============ لوحات المفاتيح ============
@@ -875,508 +994,9 @@ def format_subscriber_status(sub_id: int):
     text += f"إجمالي المدفوع: {summary['total_payments']}\n"
     text += f"إجمالي المتأخرات: {summary['balance']}\n"
     return text
-    # ============ توجيه رسائل المدير ============
-async def admin_text_router(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: str
-):
-    user_data = context.user_data
 
-    # زر إلغاء العملية يعمل في أي وقت
-    if text == "إلغاء العملية":
-        user_data.clear()
-        user_data[STATE_KEY] = STATE_NONE
-        await update.message.reply_text(
-            "تم إلغاء العملية والعودة إلى لوحة المدير.",
-            reply_markup=admin_keyboard(),
-        )
-        return
 
-    # ===================== الحالات العامة =====================
-    if state == STATE_NONE:
-        if text == "مشترك جديد":
-            serial = get_next_serial()
-            user_data["new_sub_serial"] = serial
-            await update.message.reply_text(
-                f"إنشاء مشترك جديد.\nالرقم التسلسلي المقترح: {serial}\n"
-                "الرجاء إدخال اسم المشترك (رباعي أو خماسي):",
-                reply_markup=ReplyKeyboardRemove(),
-            )
-            user_data[STATE_KEY] = STATE_ADMIN_NEW_SUB_NAME
-            return
-
-        if text == "تعديل مشترك":
-            await update.message.reply_text(
-                "الرجاء إدخال رقم المشترك الذي تريد تعديله:",
-                reply_markup=ReplyKeyboardRemove(),
-            )
-            user_data[STATE_KEY] = STATE_ADMIN_EDIT_SUB_WAIT_ACCOUNT
-            return
-
-        if text == "تسجيل قراءة":
-            await update.message.reply_text(
-                "الرجاء إدخال رقم المشترك لتسجيل القراءة:",
-                reply_markup=ReplyKeyboardRemove(),
-            )
-            user_data[STATE_KEY] = STATE_ADMIN_READ_WAIT_ACCOUNT
-            return
-
-        if text == "تسجيل دفع":
-            await update.message.reply_text(
-                "الرجاء إدخال رقم المشترك لتسجيل الدفع:",
-                reply_markup=ReplyKeyboardRemove(),
-            )
-            user_data[STATE_KEY] = STATE_ADMIN_PAY_WAIT_ACCOUNT
-            return
-
-        if text == "كشف مشترك":
-            await update.message.reply_text(
-                "الرجاء إدخال رقم المشترك للاستعلام:",
-                reply_markup=ReplyKeyboardRemove(),
-            )
-            user_data[STATE_KEY] = STATE_ADMIN_INQ_WAIT_ACCOUNT
-            return
-
-        if text == "كشف منطقة":
-            areas = get_all_areas()
-            if not areas:
-                await update.message.reply_text(
-                    "لا توجد مناطق مسجلة بعد.", reply_markup=admin_keyboard()
-                )
-                return
-            buttons = [
-                [InlineKeyboardButton(a[1], callback_data=f"area_{a[0]}")]
-                for a in areas
-            ]
-            await update.message.reply_text(
-                "اختر المنطقة:",
-                reply_markup=InlineKeyboardMarkup(buttons),
-            )
-            user_data[STATE_KEY] = STATE_ADMIN_AREA_CHOOSE
-            return
-
-        if text == "كشف رئيسي":
-            await update.message.reply_text(
-                "أدخل تاريخ البداية بصيغة يوم/شهر/سنة (مثال: 01/01/2026):",
-                reply_markup=ReplyKeyboardRemove(),
-            )
-            user_data[STATE_KEY] = STATE_ADMIN_MAIN_WAIT_FROM
-            return
-
-        if text == "إرسال رسالة":
-            buttons = [
-                [
-                    InlineKeyboardButton("عامة", callback_data="msg_type_general"),
-                    InlineKeyboardButton("منطقة", callback_data="msg_type_area"),
-                    InlineKeyboardButton("مشترك", callback_data="msg_type_sub"),
-                ]
-            ]
-            await update.message.reply_text(
-                "اختر نوع الرسالة:", reply_markup=InlineKeyboardMarkup(buttons)
-            )
-            user_data[STATE_KEY] = STATE_ADMIN_MSG_TYPE
-            return
-
-        if text == "إغلاق سنوي":
-            buttons = [
-                [
-                    InlineKeyboardButton("موافق", callback_data="annual_ok"),
-                    InlineKeyboardButton("إلغاء", callback_data="annual_cancel"),
-                ]
-            ]
-            await update.message.reply_text(
-                "هل أنت متأكد من تنفيذ الإغلاق السنوي؟",
-                reply_markup=InlineKeyboardMarkup(buttons),
-            )
-            user_data[STATE_KEY] = STATE_ADMIN_ANNUAL_CONFIRM
-            return
-
-        await update.message.reply_text(
-            "اختر من لوحة المدير أو استخدم الأوامر المتاحة.",
-            reply_markup=admin_keyboard(),
-        )
-        return
-
-    # ===================== مشترك جديد =====================
-    if state == STATE_ADMIN_NEW_SUB_NAME:
-        user_data["new_sub_name"] = text
-        await update.message.reply_text("الرجاء إدخال رقم المشترك (رقم العداد):")
-        user_data[STATE_KEY] = STATE_ADMIN_NEW_SUB_ACCOUNT
-        return
-
-    if state == STATE_ADMIN_NEW_SUB_ACCOUNT:
-        user_data["new_sub_account"] = text
-        await update.message.reply_text("الرجاء إدخال اسم المنطقة:")
-        user_data[STATE_KEY] = STATE_ADMIN_NEW_SUB_AREA
-        return
-
-    if state == STATE_ADMIN_NEW_SUB_AREA:
-        serial = user_data.get("new_sub_serial")
-        name = user_data.get("new_sub_name")
-        account_no = user_data.get("new_sub_account")
-        area_name = text
-        create_subscriber(serial, account_no, name, area_name)
-        await update.message.reply_text(
-            "تم حفظ المشترك الجديد بنجاح.\n"
-            f"الرقم التسلسلي: {serial}\n"
-            f"رقم المشترك: {account_no}\n"
-            f"الاسم: {name}\n"
-            f"المنطقة: {area_name}",
-            reply_markup=admin_keyboard(),
-        )
-        user_data[STATE_KEY] = STATE_NONE
-        return
-
-    # ===================== تعديل مشترك =====================
-    if state == STATE_ADMIN_EDIT_SUB_WAIT_ACCOUNT:
-        sub = find_subscriber_by_account(text)
-        if not sub:
-            await update.message.reply_text(
-                "لم يتم العثور على مشترك بهذا الرقم.", reply_markup=admin_keyboard()
-            )
-            user_data[STATE_KEY] = STATE_NONE
-            return
-        user_data["edit_sub_id"] = sub[0]
-        info = format_subscriber_info(sub)
-        buttons = [
-            [
-                InlineKeyboardButton("تعديل الاسم", callback_data="edit_name"),
-                InlineKeyboardButton("تعديل المنطقة", callback_data="edit_area"),
-            ]
-        ]
-        await update.message.reply_text(
-            "بيانات المشترك:\n\n" + info + "\nاختر ما تريد تعديله:",
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
-        user_data[STATE_KEY] = STATE_ADMIN_EDIT_SUB_CHOICE
-        return
-
-    if state == STATE_ADMIN_EDIT_SUB_NEW_NAME:
-        sub_id = user_data.get("edit_sub_id")
-        update_subscriber(sub_id, name=text)
-        await update.message.reply_text(
-            "تم تعديل الاسم بنجاح.", reply_markup=admin_keyboard()
-        )
-        user_data[STATE_KEY] = STATE_NONE
-        return
-
-    if state == STATE_ADMIN_EDIT_SUB_NEW_AREA:
-        sub_id = user_data.get("edit_sub_id")
-        update_subscriber(sub_id, area_name=text)
-        await update.message.reply_text(
-            "تم تعديل المنطقة بنجاح.", reply_markup=admin_keyboard()
-        )
-        user_data[STATE_KEY] = STATE_NONE
-        return
-
-    # ===================== تسجيل قراءة =====================
-    if state == STATE_ADMIN_READ_WAIT_ACCOUNT:
-        sub = find_subscriber_by_account(text)
-        if not sub:
-            await update.message.reply_text(
-                "لم يتم العثور على مشترك بهذا الرقم.", reply_markup=admin_keyboard()
-            )
-            user_data[STATE_KEY] = STATE_NONE
-            return
-        user_data["read_sub_id"] = sub[0]
-        await update.message.reply_text("الرجاء إدخال آخر قراءة (رقم العداد الحالي):")
-        user_data[STATE_KEY] = STATE_ADMIN_READ_WAIT_VALUE
-        return
-
-    if state == STATE_ADMIN_READ_WAIT_VALUE:
-        try:
-            curr_read = int(text)
-        except ValueError:
-            await update.message.reply_text("الرجاء إدخال رقم صحيح للقراءة.")
-            return
-        sub_id = user_data.get("read_sub_id")
-        sub = find_subscriber_by_id(sub_id)
-        prev_read, units, unit_price, amount = add_reading(sub_id, curr_read)
-        user_data["read_curr"] = curr_read
-        user_data["read_prev"] = prev_read
-        user_data["read_units"] = units
-        user_data["read_unit_price"] = unit_price
-        user_data["read_amount"] = amount
-
-        info = format_subscriber_info(sub)
-        text_msg = (
-            "تسجيل قراءة جديدة:\n\n"
-            + info
-            + f"القراءة السابقة: {prev_read}\n"
-            f"القراءة الحالية: {curr_read}\n"
-            f"فارق القراءات (وحدات): {units}\n"
-            f"سعر الوحدة: {unit_price}\n"
-            f"قيمة الاستهلاك: {amount}\n\n"
-            "هل تريد حفظ هذه القراءة؟"
-        )
-        buttons = [
-            [
-                InlineKeyboardButton("حفظ", callback_data="read_save"),
-                InlineKeyboardButton("تعديل", callback_data="read_edit"),
-            ]
-        ]
-        await update.message.reply_text(
-            text_msg, reply_markup=InlineKeyboardMarkup(buttons)
-        )
-        user_data[STATE_KEY] = STATE_ADMIN_READ_CONFIRM
-        return
-
-    # ===================== تسجيل دفع =====================
-    if state == STATE_ADMIN_PAY_WAIT_ACCOUNT:
-        sub = find_subscriber_by_account(text)
-        if not sub:
-            await update.message.reply_text(
-                "لم يتم العثور على مشترك بهذا الرقم.", reply_markup=admin_keyboard()
-            )
-            user_data[STATE_KEY] = STATE_NONE
-            return
-        user_data["pay_sub_id"] = sub[0]
-        await update.message.reply_text("الرجاء إدخال مبلغ الدفع:")
-        user_data[STATE_KEY] = STATE_ADMIN_PAY_WAIT_AMOUNT
-        return
-
-    if state == STATE_ADMIN_PAY_WAIT_AMOUNT:
-        try:
-            amount = int(text)
-        except ValueError:
-            await update.message.reply_text("الرجاء إدخال مبلغ صحيح (أرقام فقط).")
-            return
-        user_data["pay_amount"] = amount
-        sub_id = user_data.get("pay_sub_id")
-        sub = find_subscriber_by_id(sub_id)
-        info = format_subscriber_info(sub)
-        msg = (
-            "تسجيل دفع جديد:\n\n"
-            + info
-            + f"المبلغ: {amount}\n\n"
-            "هل تريد حفظ هذه العملية؟"
-        )
-        buttons = [
-            [
-                InlineKeyboardButton("حفظ", callback_data="pay_save"),
-                InlineKeyboardButton("تعديل", callback_data="pay_edit"),
-            ]
-        ]
-        await update.message.reply_text(
-            msg, reply_markup=InlineKeyboardMarkup(buttons)
-        )
-        user_data[STATE_KEY] = STATE_ADMIN_PAY_CONFIRM
-        return
-
-    # ===================== كشف مشترك =====================
-    if state == STATE_ADMIN_INQ_WAIT_ACCOUNT:
-        sub = find_subscriber_by_account(text)
-        if not sub:
-            await update.message.reply_text(
-                "لم يتم العثور على مشترك بهذا الرقم.", reply_markup=admin_keyboard()
-            )
-            user_data[STATE_KEY] = STATE_NONE
-            return
-        sub_id = sub[0]
-        info = format_subscriber_status(sub_id)
-        buttons = [
-            [
-                InlineKeyboardButton("إرسال للمشترك", callback_data=f"inq_send_{sub_id}"),
-                InlineKeyboardButton("تجاهل", callback_data="inq_ignore"),
-            ]
-        ]
-        await update.message.reply_text(
-            info, reply_markup=InlineKeyboardMarkup(buttons)
-        )
-        user_data[STATE_KEY] = STATE_NONE
-        return
-
-    # ===================== كشف منطقة =====================
-    if state == STATE_ADMIN_AREA_WAIT_FROM:
-        d = parse_date_str(text)
-        if not d:
-            await update.message.reply_text(
-                "صيغة التاريخ غير صحيحة. مثال صحيح: 01/01/2026"
-            )
-            return
-        user_data["area_from_date"] = d
-        await update.message.reply_text(
-            "أدخل تاريخ النهاية بصيغة يوم/شهر/سنة (مثال: 10/03/2026):"
-        )
-        user_data[STATE_KEY] = STATE_ADMIN_AREA_WAIT_TO
-        return
-
-    if state == STATE_ADMIN_AREA_WAIT_TO:
-        d = parse_date_str(text)
-        if not d:
-            await update.message.reply_text(
-                "صيغة التاريخ غير صحيحة. مثال صحيح: 10/03/2026"
-            )
-            return
-        if d < user_data["area_from_date"]:
-            await update.message.reply_text("تاريخ النهاية يجب أن يكون بعد تاريخ البداية.")
-            return
-
-        from_date = user_data["area_from_date"]
-        user_data["area_to_date"] = d
-        area_id = user_data.get("area_id")
-        total_c, total_p, bal = get_area_summary(area_id, from_date, d)
-
-        conn = get_conn()
-        c = conn.cursor()
-        c.execute("SELECT name FROM areas WHERE id=?", (area_id,))
-        area_name = c.fetchone()[0]
-        conn.close()
-
-        msg = (
-            f"كشف منطقة: {area_name}\n"
-            f"الفترة: من {from_date} إلى {d}\n\n"
-            f"إجمالي الاستهلاك (مبلغ): {total_c}\n"
-            f"إجمالي المدفوع: {total_p}\n"
-            f"إجمالي المتأخرات: {bal}"
-        )
-
-        filename = f"area_{area_id}_{datetime.utcnow().timestamp()}.pdf"
-        generate_pdf(
-            filename,
-            "area",
-            from_date,
-            d,
-            [],
-            totals={"paid": total_p, "due": bal},
-        )
-
-        await update.message.reply_text(msg, reply_markup=admin_keyboard())
-        await update.message.reply_document(
-            document=InputFile(filename, filename=os.path.basename(filename)),
-            caption="ملف كشف المنطقة (PDF).",
-        )
-        user_data[STATE_KEY] = STATE_NONE
-        return
-
-    # ===================== كشف رئيسي =====================
-    if state == STATE_ADMIN_MAIN_WAIT_FROM:
-        d = parse_date_str(text)
-        if not d:
-            await update.message.reply_text(
-                "صيغة التاريخ غير صحيحة. مثال صحيح: 01/01/2026"
-            )
-            return
-        user_data["main_from_date"] = d
-        await update.message.reply_text(
-            "أدخل تاريخ النهاية بصيغة يوم/شهر/سنة (مثال: 10/03/2026):"
-        )
-        user_data[STATE_KEY] = STATE_ADMIN_MAIN_WAIT_TO
-        return
-
-    if state == STATE_ADMIN_MAIN_WAIT_TO:
-        d = parse_date_str(text)
-        if not d:
-            await update.message.reply_text(
-                "صيغة التاريخ غير صحيحة. مثال صحيح: 10/03/2026"
-            )
-            return
-        if d < user_data["main_from_date"]:
-            await update.message.reply_text("تاريخ النهاية يجب أن يكون بعد تاريخ البداية.")
-            return
-
-        from_date = user_data["main_from_date"]
-        user_data["main_to_date"] = d
-        total_c, total_p, bal = get_global_summary(from_date, d)
-        msg = (
-            "كشف رئيسي لجميع المناطق:\n"
-            f"الفترة: من {from_date} إلى {d}\n\n"
-            f"إجمالي الاستهلاك (مبلغ): {total_c}\n"
-            f"إجمالي المدفوع: {total_p}\n"
-            f"إجمالي المتأخرات: {bal}"
-        )
-
-        filename = f"main_{datetime.utcnow().timestamp()}.pdf"
-        generate_pdf(
-            filename,
-            "main",
-            from_date,
-            d,
-            [],
-            totals={"paid": total_p, "due": bal},
-        )
-
-        await update.message.reply_text(msg, reply_markup=admin_keyboard())
-        await update.message.reply_document(
-            document=InputFile(filename, filename=os.path.basename(filename)),
-            caption="ملف الكشف الرئيسي (PDF).",
-        )
-        user_data[STATE_KEY] = STATE_NONE
-        return
-
-    # ===================== إرسال رسالة: نص الرسالة =====================
-    if state == STATE_ADMIN_MSG_TEXT:
-        msg_type = user_data.get("msg_type")
-        text_msg = text
-
-        if msg_type == "general":
-            conn = get_conn()
-            c = conn.cursor()
-            c.execute("SELECT chat_id FROM subscribers WHERE chat_id IS NOT NULL")
-            chats = [row[0] for row in c.fetchall()]
-            conn.close()
-            for ch in chats:
-                try:
-                    await context.bot.send_message(chat_id=ch, text=text_msg)
-                except Exception:
-                    pass
-            log_message("general", "all", text_msg)
-            await update.message.reply_text(
-                "تم إرسال الرسالة العامة لجميع المشتركين.",
-                reply_markup=admin_keyboard(),
-            )
-            user_data[STATE_KEY] = STATE_NONE
-            return
-
-        if msg_type == "area":
-            area_ids = user_data.get("msg_area_ids", [])
-            if not area_ids:
-                await update.message.reply_text(
-                    "لم يتم اختيار أي منطقة.", reply_markup=admin_keyboard()
-                )
-                user_data[STATE_KEY] = STATE_NONE
-                return
-            conn = get_conn()
-            c = conn.cursor()
-            for aid in area_ids:
-                c.execute(
-                    "SELECT chat_id FROM subscribers WHERE area_id=? AND chat_id IS NOT NULL",
-                    (aid,),
-                )
-                chats = [row[0] for row in c.fetchall()]
-                for ch in chats:
-                    try:
-                        await context.bot.send_message(chat_id=ch, text=text_msg)
-                    except Exception:
-                        pass
-            conn.close()
-            log_message("area", ",".join(map(str, area_ids)), text_msg)
-            await update.message.reply_text(
-                "تم إرسال الرسالة للمناطق المحددة.", reply_markup=admin_keyboard()
-            )
-            user_data[STATE_KEY] = STATE_NONE
-            return
-
-        if msg_type == "sub":
-            sub_id = user_data.get("msg_sub_id")
-            sub = find_subscriber_by_id(sub_id)
-            if not sub or not sub[5]:
-                await update.message.reply_text(
-                    "لا يوجد قناة مرتبطة بهذا المشترك.", reply_markup=admin_keyboard()
-                )
-                user_data[STATE_KEY] = STATE_NONE
-                return
-            try:
-                await context.bot.send_message(chat_id=sub[5], text=text_msg)
-            except Exception:
-                pass
-            log_message("subscriber", str(sub_id), text_msg)
-            await update.message.reply_text(
-                "تم إرسال الرسالة للمشترك.", reply_markup=admin_keyboard()
-            )
-            user_data[STATE_KEY] = STATE_NONE
-            return
-
-# ===================== كشف حساب مشترك من جهة المدير =====================
+# ============ كشف حساب مشترك من جهة المدير (مع معاينة) ============
 async def handle_admin_sub_statement(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = context.user_data
     text = update.message.text
@@ -1430,27 +1050,54 @@ async def handle_admin_sub_statement(update: Update, context: ContextTypes.DEFAU
             return
 
         from_date = user_data["stmt_from_date"]
-        user_data["stmt_to_date"] = d
+        to_date = d
+        user_data["stmt_to_date"] = to_date
         sub_id = user_data.get("stmt_sub_id")
         sub = find_subscriber_by_id(sub_id)
-        readings, payments = get_subscriber_statement(sub_id, from_date, d)
+        readings, payments = get_subscriber_statement(sub_id, from_date, to_date)
 
+        # توليد PDF
         filename = f"statement_{sub_id}_{datetime.utcnow().timestamp()}.pdf"
-        generate_pdf(
+        generate_statement_pdf(
             filename,
-            "subscriber",
+            sub,
             from_date,
-            d,
-            (sub, readings, payments),
+            to_date,
+            readings,
+            payments,
         )
 
+        # نص معاينة للمدير
+        summary_text = format_subscriber_info(sub)
+        total_c, total_p, bal = get_global_summary(from_date, to_date)
+        # (يمكن تخصيصه أكثر لكل مشترك، لكن نكتفي بالبيانات التفصيلية في PDF)
+        preview = (
+            "معاينة كشف حساب المشترك:\n\n"
+            + summary_text
+            + f"الفترة: من {from_date} إلى {to_date}\n"
+            "تم توليد ملف PDF بالتفاصيل.\n\n"
+            "هل تريد إرسال الكشف للمشترك؟"
+        )
+
+        buttons = [
+            [
+                InlineKeyboardButton("إرسال للمشترك", callback_data=f"stmt_send_{sub_id}"),
+                InlineKeyboardButton("تجاهل", callback_data="stmt_ignore"),
+            ]
+        ]
+
+        await update.message.reply_text(preview, reply_markup=InlineKeyboardMarkup(buttons))
+        # إرسال نسخة PDF للمدير مباشرة
         await update.message.reply_document(
             document=InputFile(filename, filename=os.path.basename(filename)),
-            caption="كشف حساب المشترك (PDF).",
+            caption="كشف حساب المشترك (PDF) - نسخة المدير.",
         )
 
-        await update.message.reply_text("تم إرسال كشف الحساب.")
-    
+        user_data["stmt_pdf_file"] = filename
+        user_data[STATE_KEY] = STATE_NONE
+        return
+
+
 # ============ توجيه رسائل المدير ============
 async def admin_text_router(
     update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: str
@@ -1745,7 +1392,7 @@ async def admin_text_router(
         user_data[STATE_KEY] = STATE_ADMIN_PAY_CONFIRM
         return
 
-    # كشف مشترك: إدخال رقم المشترك
+    # كشف مشترك: إدخال رقم المشترك (استعلام سريع)
     if state == STATE_ADMIN_INQ_WAIT_ACCOUNT:
         sub = find_subscriber_by_account(text)
         if not sub:
@@ -1794,11 +1441,12 @@ async def admin_text_router(
             await update.message.reply_text("تاريخ النهاية يجب أن يكون بعد تاريخ البداية.")
             return
 
-        user_data["area_to_date"] = d
+        from_date = user_data["area_from_date"]
+        to_date = d
+        user_data["area_to_date"] = to_date
         area_id = user_data.get("area_id")
-        total_c, total_p, bal = get_area_summary(
-            area_id, user_data["area_from_date"], user_data["area_to_date"]
-        )
+        total_c, total_p, bal = get_area_summary(area_id, from_date, to_date)
+
         conn = get_conn()
         c = conn.cursor()
         c.execute("SELECT name FROM areas WHERE id=?", (area_id,))
@@ -1807,29 +1455,35 @@ async def admin_text_router(
 
         msg = (
             f"كشف منطقة: {area_name}\n"
-            f"الفترة: من {user_data['area_from_date']} إلى {user_data['area_to_date']}\n\n"
+            f"الفترة: من {from_date} إلى {to_date}\n\n"
             f"إجمالي الاستهلاك (مبلغ): {total_c}\n"
             f"إجمالي المدفوع: {total_p}\n"
-            f"إجمالي المتأخرات: {bal}"
+            f"إجمالي المتأخرات: {bal}\n\n"
+            "هل تريد إرسال كشف تفصيلي لكل مشترك في هذه المنطقة؟"
         )
 
         filename = f"area_{area_id}_{datetime.utcnow().timestamp()}.pdf"
         generate_area_or_global_pdf(
             filename,
             f"كشف منطقة: {area_name}",
-            user_data["area_from_date"],
-            user_data["area_to_date"],
+            from_date,
+            to_date,
             total_c,
             total_p,
             bal,
         )
 
-        await update.message.reply_text(msg, reply_markup=admin_keyboard())
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("إرسال للمشتركين", callback_data=f"area_send_{area_id}"),
+                InlineKeyboardButton("تجاهل", callback_data="area_ignore"),
+            ]
+        ]))
         await update.message.reply_document(
             document=InputFile(filename, filename=os.path.basename(filename)),
-            caption="ملف كشف المنطقة (PDF).",
+            caption="ملف كشف المنطقة (PDF) - نسخة المدير.",
         )
-        finalize_pdf_file(filename)
+        user_data["area_pdf_file"] = filename
         user_data[STATE_KEY] = STATE_NONE
         return
 
@@ -1859,35 +1513,41 @@ async def admin_text_router(
             await update.message.reply_text("تاريخ النهاية يجب أن يكون بعد تاريخ البداية.")
             return
 
-        user_data["main_to_date"] = d
-        total_c, total_p, bal = get_global_summary(
-            user_data["main_from_date"], user_data["main_to_date"]
-        )
+        from_date = user_data["main_from_date"]
+        to_date = d
+        user_data["main_to_date"] = to_date
+        total_c, total_p, bal = get_global_summary(from_date, to_date)
         msg = (
             "كشف رئيسي لجميع المناطق:\n"
-            f"الفترة: من {user_data['main_from_date']} إلى {user_data['main_to_date']}\n\n"
+            f"الفترة: من {from_date} إلى {to_date}\n\n"
             f"إجمالي الاستهلاك (مبلغ): {total_c}\n"
             f"إجمالي المدفوع: {total_p}\n"
-            f"إجمالي المتأخرات: {bal}"
+            f"إجمالي المتأخرات: {bal}\n\n"
+            "هل تريد إرسال كشف لكل المشتركين؟"
         )
 
         filename = f"main_{datetime.utcnow().timestamp()}.pdf"
         generate_area_or_global_pdf(
             filename,
             "كشف رئيسي لجميع المناطق",
-            user_data["main_from_date"],
-            user_data["main_to_date"],
+            from_date,
+            to_date,
             total_c,
             total_p,
             bal,
         )
 
-        await update.message.reply_text(msg, reply_markup=admin_keyboard())
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("إرسال للجميع", callback_data="main_send_all"),
+                InlineKeyboardButton("تجاهل", callback_data="main_ignore"),
+            ]
+        ]))
         await update.message.reply_document(
             document=InputFile(filename, filename=os.path.basename(filename)),
-            caption="ملف الكشف الرئيسي (PDF).",
+            caption="ملف الكشف الرئيسي (PDF) - نسخة المدير.",
         )
-        finalize_pdf_file(filename)
+        user_data["main_pdf_file"] = filename
         user_data[STATE_KEY] = STATE_NONE
         return
 
@@ -1964,71 +1624,13 @@ async def admin_text_router(
             user_data[STATE_KEY] = STATE_NONE
             return
 
-    # كشف حساب مشترك من جهة المدير
-    if state == STATE_ADMIN_SUB_STATEMENT_WAIT_ACCOUNT:
-        sub = find_subscriber_by_account(text)
-        if not sub:
-            await update.message.reply_text(
-                "لم يتم العثور على مشترك بهذا الرقم.", reply_markup=admin_keyboard()
-            )
-            user_data[STATE_KEY] = STATE_NONE
-            return
-        user_data["stmt_sub_id"] = sub[0]
-        await update.message.reply_text(
-            "أدخل تاريخ البداية بصيغة يوم/شهر/سنة (مثال: 01/01/2026):"
-        )
-        user_data[STATE_KEY] = STATE_ADMIN_SUB_STATEMENT_WAIT_FROM
-        return
-
-    if state == STATE_ADMIN_SUB_STATEMENT_WAIT_FROM:
-        d = parse_date_str(text)
-        if not d:
-            await update.message.reply_text(
-                "صيغة التاريخ غير صحيحة. مثال صحيح: 01/01/2026"
-            )
-            return
-        user_data["stmt_from_date"] = d
-        await update.message.reply_text(
-            "أدخل تاريخ النهاية بصيغة يوم/شهر/سنة (مثال: 10/03/2026):"
-        )
-        user_data[STATE_KEY] = STATE_ADMIN_SUB_STATEMENT_WAIT_TO
-        return
-
-    if state == STATE_ADMIN_SUB_STATEMENT_WAIT_TO:
-        d = parse_date_str(text)
-        if not d:
-            await update.message.reply_text(
-                "صيغة التاريخ غير صحيحة. مثال صحيح: 10/03/2026"
-            )
-            return
-        if d < user_data["stmt_from_date"]:
-            await update.message.reply_text("تاريخ النهاية يجب أن يكون بعد تاريخ البداية.")
-            return
-
-        user_data["stmt_to_date"] = d
-        sub_id = user_data.get("stmt_sub_id")
-        sub = find_subscriber_by_id(sub_id)
-        readings, payments = get_subscriber_statement(
-            sub_id, user_data["stmt_from_date"], user_data["stmt_to_date"]
-        )
-        filename = f"statement_{sub_id}_{datetime.utcnow().timestamp()}.pdf"
-        generate_statement_pdf(
-            filename,
-            sub,
-            user_data["stmt_from_date"],
-            user_data["stmt_to_date"],
-            readings,
-            payments,
-        )
-        await update.message.reply_document(
-            document=InputFile(filename, filename=os.path.basename(filename)),
-            caption="كشف حساب المشترك (PDF).",
-        )
-        finalize_pdf_file(filename)
-        await update.message.reply_text(
-            "تم إرسال كشف الحساب.", reply_markup=admin_keyboard()
-        )
-        user_data[STATE_KEY] = STATE_NONE
+    # كشف حساب مشترك من جهة المدير (تمت معالجته في handle_admin_sub_statement)
+    if state in (
+        STATE_ADMIN_SUB_STATEMENT_WAIT_ACCOUNT,
+        STATE_ADMIN_SUB_STATEMENT_WAIT_FROM,
+        STATE_ADMIN_SUB_STATEMENT_WAIT_TO,
+    ):
+        await handle_admin_sub_statement(update, context)
         return
 
     # إغلاق سنوي: إدخال كلمة السر
@@ -2048,9 +1650,38 @@ async def admin_text_router(
             document=InputFile(filename, filename=os.path.basename(filename)),
             caption="تقرير الإغلاق السنوي (PDF).",
         )
-        finalize_pdf_file(filename)
+
+        # إرسال كشف سنوي لكل مشترك (نصي + PDF)
+        subs = get_all_subscribers()
+        today = datetime.utcnow().date()
+        from_date = date(today.year, 1, 1)
+        to_date = date(today.year, 12, 31)
+        for sub in subs:
+            sub_id = sub[0]
+            chat_id = sub[5]
+            if not chat_id:
+                continue
+            readings, payments = get_subscriber_statement(sub_id, from_date, to_date)
+            stmt_file = f"annual_stmt_{sub_id}_{datetime.utcnow().timestamp()}.pdf"
+            generate_statement_pdf(stmt_file, sub, from_date, to_date, readings, payments)
+            text_msg = (
+                "كشف حسابك السنوي:\n\n"
+                + format_subscriber_info(sub)
+                + f"الفترة: من {from_date} إلى {to_date}\n"
+            )
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=text_msg)
+                await context.bot.send_document(
+                    chat_id=chat_id,
+                    document=InputFile(stmt_file, filename=os.path.basename(stmt_file)),
+                    caption="كشف حسابك السنوي (PDF).",
+                )
+            except Exception:
+                pass
+
         await update.message.reply_text(
-            "تم تنفيذ الإغلاق السنوي بنجاح.", reply_markup=admin_keyboard()
+            "تم تنفيذ الإغلاق السنوي وإرسال كشوف الحساب للمشتركين.",
+            reply_markup=admin_keyboard(),
         )
         user_data[STATE_KEY] = STATE_NONE
         return
@@ -2101,16 +1732,17 @@ async def subscriber_text_router(
         if d < from_date:
             await update.message.reply_text("تاريخ النهاية يجب أن يكون بعد البداية.")
             return
-        user_data["sub_stmt_to"] = d
+        to_date = d
+        user_data["sub_stmt_to"] = to_date
         readings, payments = get_subscriber_statement(
-            sub_id, from_date, d
+            sub_id, from_date, to_date
         )
         filename = f"sub_stmt_{sub_id}_{datetime.utcnow().timestamp()}.pdf"
         generate_pdf(
             filename,
             "subscriber",
             from_date,
-            d,
+            to_date,
             (sub, readings, payments),
         )
         await update.message.reply_document(
@@ -2142,7 +1774,9 @@ async def subscriber_text_router(
         reply_markup=subscriber_keyboard(),
     )
     user_data[STATE_KEY] = STATE_NONE
-    # ============ معالجة أزرار Inline ============
+
+
+# ============ معالجة أزرار Inline ============
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -2232,7 +1866,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_data[STATE_KEY] = STATE_ADMIN_PAY_WAIT_AMOUNT
             return
 
-    # كشف مشترك: إرسال للمشترك أو تجاهل
+    # كشف مشترك: إرسال للمشترك أو تجاهل (استعلام سريع)
     if data.startswith("inq_send_"):
         sub_id = int(data.split("_")[-1])
         sub = find_subscriber_by_id(sub_id)
@@ -2251,6 +1885,36 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("تم تجاهل العملية.")
         return
 
+    # كشف مشترك: إرسال من معاينة كشف الحساب (stmt_send)
+    if data.startswith("stmt_send_"):
+        sub_id = int(data.split("_")[-1])
+        sub = find_subscriber_by_id(sub_id)
+        filename = user_data.get("stmt_pdf_file")
+        if not sub or not sub[5]:
+            await query.edit_message_text("لا يوجد قناة مرتبطة بهذا المشترك.")
+            return
+        text_msg = (
+            "كشف حسابك:\n\n"
+            + format_subscriber_info(sub)
+            + "تم إرفاق كشف الحساب بصيغة PDF."
+        )
+        try:
+            await context.bot.send_message(chat_id=sub[5], text=text_msg)
+            if filename and os.path.exists(filename):
+                await context.bot.send_document(
+                    chat_id=sub[5],
+                    document=InputFile(filename, filename=os.path.basename(filename)),
+                    caption="كشف حسابك (PDF).",
+                )
+        except Exception:
+            pass
+        await query.edit_message_text("تم إرسال كشف الحساب للمشترك.")
+        return
+
+    if data == "stmt_ignore":
+        await query.edit_message_text("تم تجاهل كشف الحساب.")
+        return
+
     # كشف منطقة: اختيار المنطقة
     if state == STATE_ADMIN_AREA_CHOOSE and data.startswith("area_"):
         area_id = int(data.split("_")[1])
@@ -2259,6 +1923,41 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "أدخل تاريخ البداية بصيغة يوم/شهر/سنة:"
         )
         user_data[STATE_KEY] = STATE_ADMIN_AREA_WAIT_FROM
+        return
+
+    # كشف منطقة: إرسال جماعي
+    if data.startswith("area_send_"):
+        area_id = int(data.split("_")[-1])
+        from_date = user_data.get("area_from_date")
+        to_date = user_data.get("area_to_date")
+        subs = get_subscribers_by_area(area_id)
+        for sub in subs:
+            sub_id = sub[0]
+            chat_id = sub[5]
+            if not chat_id:
+                continue
+            readings, payments = get_subscriber_statement(sub_id, from_date, to_date)
+            stmt_file = f"area_stmt_{sub_id}_{datetime.utcnow().timestamp()}.pdf"
+            generate_statement_pdf(stmt_file, sub, from_date, to_date, readings, payments)
+            text_msg = (
+                "كشف حسابك للفترة المحددة:\n\n"
+                + format_subscriber_info(sub)
+                + f"الفترة: من {from_date} إلى {to_date}\n"
+            )
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=text_msg)
+                await context.bot.send_document(
+                    chat_id=chat_id,
+                    document=InputFile(stmt_file, filename=os.path.basename(stmt_file)),
+                    caption="كشف حسابك (PDF).",
+                )
+            except Exception:
+                pass
+        await query.edit_message_text("تم إرسال كشوف الحساب لجميع مشتركي المنطقة.")
+        return
+
+    if data == "area_ignore":
+        await query.edit_message_text("تم تجاهل كشف المنطقة.")
         return
 
     # إرسال رسالة: اختيار نوع الرسالة
@@ -2321,6 +2020,40 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # إرسال رسالة: اختيار مشترك (النص يعالج في msg_sub_text_handler)
     if state == STATE_ADMIN_MSG_SUB_WAIT:
+        return
+
+    # كشف رئيسي: إرسال للجميع
+    if data == "main_send_all":
+        from_date = user_data.get("main_from_date")
+        to_date = user_data.get("main_to_date")
+        subs = get_all_subscribers()
+        for sub in subs:
+            sub_id = sub[0]
+            chat_id = sub[5]
+            if not chat_id:
+                continue
+            readings, payments = get_subscriber_statement(sub_id, from_date, to_date)
+            stmt_file = f"main_stmt_{sub_id}_{datetime.utcnow().timestamp()}.pdf"
+            generate_statement_pdf(stmt_file, sub, from_date, to_date, readings, payments)
+            text_msg = (
+                "كشف حسابك للفترة المحددة:\n\n"
+                + format_subscriber_info(sub)
+                + f"الفترة: من {from_date} إلى {to_date}\n"
+            )
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=text_msg)
+                await context.bot.send_document(
+                    chat_id=chat_id,
+                    document=InputFile(stmt_file, filename=os.path.basename(stmt_file)),
+                    caption="كشف حسابك (PDF).",
+                )
+            except Exception:
+                pass
+        await query.edit_message_text("تم إرسال كشوف الحساب لجميع المشتركين.")
+        return
+
+    if data == "main_ignore":
+        await query.edit_message_text("تم تجاهل الكشف الرئيسي.")
         return
 
     # إغلاق سنوي: موافق/إلغاء
@@ -2395,41 +2128,7 @@ async def text_handler_wrapper(update: Update, context: ContextTypes.DEFAULT_TYP
         await text_handler(update, context)
 
 
-# ============ توليد تقرير الإغلاق السنوي PDF ============
-def generate_annual_pdf(filename: str):
-    c = canvas.Canvas(filename, pagesize=A4)
-    width, height = A4
-    y = height - 60
-
-    c.setFont("Helvetica-Bold", 16)
-    c.drawCentredString(width / 2, y, "تقرير الإغلاق السنوي لمشروع مياة قرية بيت الأقرع")
-    y -= 40
-
-    today = datetime.utcnow().date()
-    c.setFont("Helvetica", 12)
-    c.drawString(50, y, f"تاريخ التقرير: {today}")
-    y -= 30
-
-    # ملخص عام من قاعدة البيانات
-    from_date = date(today.year, 1, 1)
-    to_date = date(today.year, 12, 31)
-    total_c, total_p, bal = get_global_summary(from_date, to_date)
-
-    c.drawString(50, y, f"الفترة: من {from_date} إلى {to_date}")
-    y -= 25
-    c.drawString(50, y, f"إجمالي الاستهلاك (مبلغ): {total_c}")
-    y -= 20
-    c.drawString(50, y, f"إجمالي المدفوع: {total_p}")
-    y -= 20
-    c.drawString(50, y, f"إجمالي المتأخرات: {bal}")
-    y -= 40
-
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, 60, "مدير المشروع/ صالح الطويل")
-    c.drawString(50, 40, "التوقيع/ ____________________")
-
-    force_save_pdf(c)
-    # ============ أوامر البداية والدخول ============
+# ============ أوامر البداية والدخول ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = context.user_data
     user_data.setdefault(STATE_KEY, STATE_NONE)
@@ -2507,7 +2206,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ربط المشترك لأول مرة
     if state == STATE_SUB_LINK_WAIT_SERIAL:
-        # حفظ الرقم التسلسلي مؤقتاً
         user_data["link_serial"] = text
         await update.message.reply_text(
             "الرجاء إدخال رقم المشترك (رقم العداد):"
@@ -2536,7 +2234,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_data[STATE_KEY] = STATE_NONE
             return
 
-        # ربط هذا التليجرام بالمشترك
         link_subscriber_chat(serial_int, account_no, chat_id)
         await update.message.reply_text(
             "تم ربط حسابك كمشترك بنجاح.\nيمكنك الآن استخدام الأزرار أدناه.",
@@ -2573,4 +2270,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
