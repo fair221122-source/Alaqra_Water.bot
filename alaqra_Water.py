@@ -94,7 +94,7 @@ def register_arabic_font():
 
 
 # ============ إعدادات أساسية ============
-TOKEN = os.getenv("BOT_TOKEN", "8090667485:AAGCgIlZPEB069W_bhpIr0HBdp20GpfCCPI")
+TOKEN = os.getenv("BOT_TOKEN", "......")
 
 DB_PATH = get_db_path()
 UNIT_PRICE_DEFAULT = 500
