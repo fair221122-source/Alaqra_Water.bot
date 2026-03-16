@@ -1,39 +1,14 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-def safe_finalize_pdf(c, filename):
-    """
-    تغلق ملف PDF بشكل آمن وتضمن أنه صالح للفتح.
-    """
-    try:
-        c.showPage()
-    except:
-        pass
-
-    try:
-        c.save()
-    except:
-        pass
-
-    # إصلاح الملفات الفارغة أو التالفة
-    try:
-        if not os.path.exists(filename) or os.path.getsize(filename) < 500:
-            with open(filename, "wb") as f:
-                f.write(b"%PDF-1.4\n%EOF")
-    except:
-        pass
-        
-import logging
+# ================== imports & config ==================
 import os
 import sqlite3
-import json
 from datetime import datetime, date
+from typing import Optional, Tuple, List
 
 from telegram import (
     Update,
     ReplyKeyboardMarkup,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    ReplyKeyboardRemove,
     InputFile,
 )
 from telegram.ext import (
@@ -45,912 +20,16 @@ from telegram.ext import (
     filters,
 )
 
+# مكتبة توليد ملفات PDF
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
+from reportlab.lib.units import mm
 
-# ================== أدوات مساعدة عامة ==================
+TOKEN = "8090667485:AAGCgIlZPEB069W_bhpIr0HBdp20GpfCCPI"
+DB_PATH = "water_project.db"
+ANNUAL_CLOSE_PASSWORD = "09092009"  # يمكنك تغييره
 
-
-def keep_bot_alive():
-    import time
-    while True:
-        time.sleep(10)
-
-
-def get_db_path():
-    return os.path.join(os.path.dirname(__file__), "water_project.db")
-
-
-def force_save_pdf(c: canvas.Canvas):
-    try:
-        c.showPage()
-    except Exception:
-        pass
-    try:
-        c.save()
-    except Exception:
-        pass
-
-
-def finalize_pdf_file(filename: str):
-    try:
-        if not os.path.exists(filename) or os.path.getsize(filename) == 0:
-            c = canvas.Canvas(filename, pagesize=A4)
-            c.setFont("Helvetica", 12)
-            c.drawString(50, 800, "ملف PDF تم إنشاؤه تلقائياً.")
-            force_save_pdf(c)
-    except Exception:
-        pass
-
-
-def register_arabic_font():
-    try:
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
-        pdfmetrics.registerFont(TTFont("Arabic", "Amiri-Regular.ttf"))
-        return "Arabic"
-    except Exception:
-        return "Helvetica"
-
-
-# ============ إعدادات أساسية ============
-TOKEN = os.getenv("BOT_TOKEN", "8090667485:AAGCgIlZPEB069W_bhpIr0HBdp20GpfCCPI")
-
-DB_PATH = get_db_path()
-UNIT_PRICE_DEFAULT = 500
-ANNUAL_CLOSE_PASSWORD = os.getenv("ANNUAL_CLOSE_PASSWORD", "09092009")
-
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-
-# ============ قاعدة البيانات ============
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    """
-    )
-
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS areas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL
-        )
-    """
-    )
-
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS subscribers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            serial INTEGER UNIQUE NOT NULL,
-            account_no TEXT NOT NULL UNIQUE,
-            name TEXT NOT NULL,
-            area_id INTEGER,
-            chat_id INTEGER,
-            created_at TEXT,
-            FOREIGN KEY(area_id) REFERENCES areas(id)
-        )
-    """
-    )
-
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS readings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            subscriber_id INTEGER NOT NULL,
-            date TEXT NOT NULL,
-            prev_read INTEGER NOT NULL,
-            curr_read INTEGER NOT NULL,
-            units INTEGER NOT NULL,
-            unit_price INTEGER NOT NULL,
-            amount INTEGER NOT NULL,
-            FOREIGN KEY(subscriber_id) REFERENCES subscribers(id)
-        )
-    """
-    )
-
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS payments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            subscriber_id INTEGER NOT NULL,
-            date TEXT NOT NULL,
-            amount INTEGER NOT NULL,
-            FOREIGN KEY(subscriber_id) REFERENCES subscribers(id)
-        )
-    """
-    )
-
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS messages_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            msg_type TEXT NOT NULL,
-            target TEXT NOT NULL,
-            text TEXT NOT NULL,
-            date TEXT NOT NULL
-        )
-    """
-    )
-
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS undo_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            action_type TEXT NOT NULL,
-            table_name TEXT NOT NULL,
-            row_id INTEGER NOT NULL,
-            date TEXT NOT NULL
-        )
-    """
-    )
-
-    c.execute("SELECT value FROM settings WHERE key='unit_price'")
-    if not c.fetchone():
-        c.execute(
-            "INSERT INTO settings(key, value) VALUES('unit_price', ?)",
-            (str(UNIT_PRICE_DEFAULT),),
-        )
-
-    conn.commit()
-    conn.close()
-
-
-def get_conn():
-    return sqlite3.connect(DB_PATH)
-
-
-def get_unit_price():
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT value FROM settings WHERE key='unit_price'")
-    row = c.fetchone()
-    conn.close()
-    return int(row[0]) if row else UNIT_PRICE_DEFAULT
-
-
-def set_admin_user_id(user_id: int):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute(
-        "INSERT OR REPLACE INTO settings(key, value) VALUES('admin_user_id', ?)",
-        (str(user_id),),
-    )
-    conn.commit()
-    conn.close()
-
-
-def get_admin_user_id():
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT value FROM settings WHERE key='admin_user_id'")
-    row = c.fetchone()
-    conn.close()
-    return int(row[0]) if row else None
-
-
-def get_next_serial():
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT MAX(serial) FROM subscribers")
-    row = c.fetchone()
-    max_serial = row[0] if row and row[0] is not None else 0
-    conn.close()
-    return max_serial + 1
-
-
-def get_or_create_area(name: str):
-    name = name.strip()
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT id FROM areas WHERE name=?", (name,))
-    row = c.fetchone()
-    if row:
-        area_id = row[0]
-    else:
-        c.execute("INSERT INTO areas(name) VALUES(?)", (name,))
-        area_id = c.lastrowid
-        conn.commit()
-    conn.close()
-    return area_id
-
-
-def get_all_areas():
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT id, name FROM areas ORDER BY name")
-    rows = c.fetchall()
-    conn.close()
-    return rows
-
-
-def get_all_subscribers():
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
-        FROM subscribers s
-        LEFT JOIN areas a ON s.area_id = a.id
-        ORDER BY s.id
-        """
-    )
-    rows = c.fetchall()
-    conn.close()
-    return rows
-
-
-def get_subscribers_by_area(area_id: int):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
-        FROM subscribers s
-        LEFT JOIN areas a ON s.area_id = a.id
-        WHERE s.area_id=?
-        ORDER BY s.id
-        """,
-        (area_id,),
-    )
-    rows = c.fetchall()
-    conn.close()
-    return rows
-
-
-def find_subscriber_by_serial_and_account(serial: int, account_no: str):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
-        FROM subscribers s
-        LEFT JOIN areas a ON s.area_id = a.id
-        WHERE s.serial=? AND s.account_no=?
-    """,
-        (serial, account_no),
-    )
-    row = c.fetchone()
-    conn.close()
-    return row
-
-
-def find_subscriber_by_account(account_no: str):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
-        FROM subscribers s
-        LEFT JOIN areas a ON s.area_id = a.id
-        WHERE s.account_no=?
-    """,
-        (account_no,),
-    )
-    row = c.fetchone()
-    conn.close()
-    return row
-
-
-def find_subscriber_by_id(sub_id: int):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
-        FROM subscribers s
-        LEFT JOIN areas a ON s.area_id = a.id
-        WHERE s.id=?
-    """,
-        (sub_id,),
-    )
-    row = c.fetchone()
-    conn.close()
-    return row
-
-
-def find_subscriber_by_chat(chat_id: int):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
-        FROM subscribers s
-        LEFT JOIN areas a ON s.area_id = a.id
-        WHERE s.chat_id=?
-    """,
-        (chat_id,),
-    )
-    row = c.fetchone()
-    conn.close()
-    return row
-
-
-def link_subscriber_chat(serial: int, account_no: str, chat_id: int):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute(
-        "UPDATE subscribers SET chat_id=? WHERE serial=? AND account_no=?",
-        (chat_id, serial, account_no),
-    )
-    conn.commit()
-    conn.close()
-
-
-def create_subscriber(serial: int, account_no: str, name: str, area_name: str):
-    conn = get_conn()
-    c = conn.cursor()
-
-    c.execute("SELECT id FROM subscribers WHERE serial=?", (serial,))
-    if c.fetchone():
-        conn.close()
-        return None, "الرقم التسلسلي مستخدم من قبل."
-
-    c.execute("SELECT id FROM subscribers WHERE account_no=?", (account_no,))
-    if c.fetchone():
-        conn.close()
-        return None, "رقم المشترك مستخدم من قبل."
-
-    area_id = get_or_create_area(area_name)
-    c.execute(
-        """
-        INSERT INTO subscribers(serial, account_no, name, area_id, chat_id, created_at)
-        VALUES(?,?,?,?,?,?)
-    """,
-        (serial, account_no, name, area_id, None, datetime.utcnow().isoformat()),
-    )
-    sub_id = c.lastrowid
-
-    c.execute(
-        """
-        INSERT INTO undo_log(action_type, table_name, row_id, date)
-        VALUES(?,?,?,?)
-    """,
-        ("create", "subscribers", sub_id, datetime.utcnow().isoformat()),
-    )
-
-    conn.commit()
-    conn.close()
-    return sub_id, None
-
-
-def update_subscriber(sub_id: int, name: str = None, area_name: str = None):
-    conn = get_conn()
-    c = conn.cursor()
-    if name and area_name:
-        area_id = get_or_create_area(area_name)
-        c.execute(
-            "UPDATE subscribers SET name=?, area_id=? WHERE id=?",
-            (name, area_id, sub_id),
-        )
-    elif name:
-        c.execute("UPDATE subscribers SET name=? WHERE id=?", (name, sub_id))
-    elif area_name:
-        area_id = get_or_create_area(area_name)
-        c.execute("UPDATE subscribers SET area_id=? WHERE id=?", (area_id, sub_id))
-    conn.commit()
-    conn.close()
-
-
-def get_last_reading(subscriber_id: int):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT prev_read, curr_read, units, unit_price, amount, date
-        FROM readings
-        WHERE subscriber_id=?
-        ORDER BY id DESC
-        LIMIT 1
-    """,
-        (subscriber_id,),
-    )
-    row = c.fetchone()
-    conn.close()
-    return row
-
-
-def add_reading(subscriber_id: int, curr_read: int):
-    unit_price = get_unit_price()
-    last = get_last_reading(subscriber_id)
-    prev_read = last[1] if last else 0
-    units = max(0, curr_read - prev_read)
-    amount = units * unit_price
-
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute(
-        """
-        INSERT INTO readings(subscriber_id, date, prev_read, curr_read, units, unit_price, amount)
-        VALUES(?,?,?,?,?,?,?)
-    """,
-        (
-            subscriber_id,
-            datetime.utcnow().isoformat(),
-            prev_read,
-            curr_read,
-            units,
-            unit_price,
-            amount,
-        ),
-    )
-    row_id = c.lastrowid
-    c.execute(
-        """
-        INSERT INTO undo_log(action_type, table_name, row_id, date)
-        VALUES(?,?,?,?)
-    """,
-        ("create", "readings", row_id, datetime.utcnow().isoformat()),
-    )
-    conn.commit()
-    conn.close()
-    return prev_read, units, unit_price, amount
-
-
-def add_payment(subscriber_id: int, amount: int):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute(
-        """
-        INSERT INTO payments(subscriber_id, date, amount)
-        VALUES(?,?,?)
-    """,
-        (subscriber_id, datetime.utcnow().isoformat(), amount),
-    )
-    row_id = c.lastrowid
-    c.execute(
-        """
-        INSERT INTO undo_log(action_type, table_name, row_id, date)
-        VALUES(?,?,?,?)
-    """,
-        ("create", "payments", row_id, datetime.utcnow().isoformat()),
-    )
-    conn.commit()
-    conn.close()
-
-
-def undo_last_action():
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT id, action_type, table_name, row_id
-        FROM undo_log
-        ORDER BY id DESC
-        LIMIT 1
-    """
-    )
-    row = c.fetchone()
-    if not row:
-        conn.close()
-        return False, "لا توجد عملية سابقة للتراجع عنها."
-
-    log_id, action_type, table_name, row_id = row
-    if action_type == "create":
-        c.execute(f"DELETE FROM {table_name} WHERE id=?", (row_id,))
-        c.execute("DELETE FROM undo_log WHERE id=?", (log_id,))
-        conn.commit()
-        conn.close()
-        return True, f"تم التراجع عن آخر عملية حفظ في جدول {table_name}."
-    conn.close()
-    return False, "لا يمكن التراجع عن هذه العملية."
-
-
-def get_subscriber_summary(subscriber_id: int):
-    conn = get_conn()
-    c = conn.cursor()
-
-    c.execute(
-        """
-        SELECT SUM(amount) FROM readings WHERE subscriber_id=?
-    """,
-        (subscriber_id,),
-    )
-    total_consumption_amount = c.fetchone()[0] or 0
-
-    c.execute(
-        """
-        SELECT SUM(amount) FROM payments WHERE subscriber_id=?
-    """,
-        (subscriber_id,),
-    )
-    total_payments = c.fetchone()[0] or 0
-
-    balance = total_consumption_amount - total_payments
-
-    c.execute(
-        """
-        SELECT prev_read, curr_read, units, unit_price, amount, date
-        FROM readings
-        WHERE subscriber_id=?
-        ORDER BY id DESC
-        LIMIT 1
-    """,
-        (subscriber_id,),
-    )
-    last_read = c.fetchone()
-
-    conn.close()
-    return {
-        "total_consumption_amount": total_consumption_amount,
-        "total_payments": total_payments,
-        "balance": balance,
-        "last_read": last_read,
-    }
-
-
-def get_subscriber_statement(subscriber_id: int, from_date: date, to_date: date):
-    conn = get_conn()
-    c = conn.cursor()
-
-    c.execute(
-        """
-        SELECT date, prev_read, curr_read, units, unit_price, amount
-        FROM readings
-        WHERE subscriber_id=? AND date BETWEEN ? AND ?
-        ORDER BY date
-    """,
-        (
-            subscriber_id,
-            from_date.isoformat(),
-            (datetime.combine(to_date, datetime.max.time())).isoformat(),
-        ),
-    )
-    readings = c.fetchall()
-
-    c.execute(
-        """
-        SELECT date, amount
-        FROM payments
-        WHERE subscriber_id=? AND date BETWEEN ? AND ?
-        ORDER BY date
-    """,
-        (
-            subscriber_id,
-            from_date.isoformat(),
-            (datetime.combine(to_date, datetime.max.time())).isoformat(),
-        ),
-    )
-    payments = c.fetchall()
-
-    conn.close()
-    return readings, payments
-
-
-def get_area_summary(area_id: int, from_date: date, to_date: date):
-    conn = get_conn()
-    c = conn.cursor()
-
-    c.execute(
-        """
-        SELECT id FROM subscribers WHERE area_id=?
-    """,
-        (area_id,),
-    )
-    subs = [row[0] for row in c.fetchall()]
-
-    total_consumption = 0
-    total_payments = 0
-
-    for sid in subs:
-        c.execute(
-            """
-            SELECT SUM(amount) FROM readings
-            WHERE subscriber_id=? AND date BETWEEN ? AND ?
-        """,
-            (
-                sid,
-                from_date.isoformat(),
-                (datetime.combine(to_date, datetime.max.time())).isoformat(),
-            ),
-        )
-        total_consumption += c.fetchone()[0] or 0
-
-        c.execute(
-            """
-            SELECT SUM(amount) FROM payments
-            WHERE subscriber_id=? AND date BETWEEN ? AND ?
-        """,
-            (
-                sid,
-                from_date.isoformat(),
-                (datetime.combine(to_date, datetime.max.time())).isoformat(),
-            ),
-        )
-        total_payments += c.fetchone()[0] or 0
-
-    conn.close()
-    return total_consumption, total_payments, total_consumption - total_payments
-
-
-def get_global_summary(from_date: date, to_date: date):
-    conn = get_conn()
-    c = conn.cursor()
-
-    c.execute(
-        """
-        SELECT SUM(amount) FROM readings
-        WHERE date BETWEEN ? AND ?
-    """,
-        (
-            from_date.isoformat(),
-            (datetime.combine(to_date, datetime.max.time())).isoformat(),
-        ),
-    )
-    total_consumption = c.fetchone()[0] or 0
-
-    c.execute(
-        """
-        SELECT SUM(amount) FROM payments
-        WHERE date BETWEEN ? AND ?
-    """,
-        (
-            from_date.isoformat(),
-            (datetime.combine(to_date, datetime.max.time())).isoformat(),
-        ),
-    )
-    total_payments = c.fetchone()[0] or 0
-
-    conn.close()
-    return total_consumption, total_payments, total_consumption - total_payments
-
-
-def log_message(msg_type: str, target: str, text: str):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute(
-        """
-        INSERT INTO messages_log(msg_type, target, text, date)
-        VALUES(?,?,?,?)
-    """,
-        (msg_type, target, text, datetime.utcnow().isoformat()),
-    )
-    conn.commit()
-    conn.close()
-
-
-# ============ توليد ملفات PDF ============
-def generate_pdf(
-    filename: str,
-    report_type: str,
-    from_date: date,
-    to_date: date,
-    data,
-    totals=None,
-):
-    font_name = register_arabic_font()
-    c = canvas.Canvas(filename, pagesize=A4)
-    width, height = A4
-    y = height - 50
-
-    c.setFont("Helvetica-Bold", 16)
-    c.drawCentredString(width / 2, y, "مشروع مياة قرية بيت الأقرع الأهلي")
-    y -= 30
-
-    title_map = {
-        "subscriber": "كشف حساب مشترك",
-        "area": "كشف حساب منطقة",
-        "main": "كشف حساب رئيسي",
-    }
-
-    c.setFont("Helvetica-Bold", 12)
-    c.drawCentredString(
-        width / 2,
-        y,
-        f"{title_map.get(report_type, '')} للفترة من {from_date} إلى {to_date}",
-    )
-    y -= 40
-
-    if report_type == "subscriber":
-        subscriber, readings, payments = data
-
-        c.setFont(font_name, 11)
-        c.drawString(50, y, f"الاسم: {subscriber[3]}")
-        y -= 20
-        c.drawString(50, y, f"الرقم التسلسلي: {subscriber[1]}")
-        y -= 20
-        c.drawString(50, y, f"رقم المشترك: {subscriber[2]}")
-        y -= 20
-        c.drawString(50, y, f"المنطقة: {subscriber[6] or '-'}")
-        y -= 30
-
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(50, y, "القراءات:")
-        y -= 20
-
-        c.setFont("Helvetica", 9)
-        if readings:
-            for r in readings:
-                line = (
-                    f"تاريخ: {r[0][:10]} | سابقة: {r[1]} | حالية: {r[2]} | "
-                    f"وحدات: {r[3]} | سعر: {r[4]} | مبلغ: {r[5]}"
-                )
-                c.drawString(50, y, line)
-                y -= 15
-                if y < 80:
-                    c.showPage()
-                    y = height - 50
-                    c.setFont("Helvetica", 9)
-        else:
-            c.drawString(50, y, "لا توجد قراءات في هذه الفترة.")
-            y -= 20
-
-        y -= 20
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(50, y, "المدفوعات:")
-        y -= 20
-
-        c.setFont("Helvetica", 9)
-        if payments:
-            for p in payments:
-                line = f"تاريخ: {p[0][:10]} | مبلغ: {p[1]}"
-                c.drawString(50, y, line)
-                y -= 15
-                if y < 80:
-                    c.showPage()
-                    y = height - 50
-                    c.setFont("Helvetica", 9)
-        else:
-            c.drawString(50, y, "لا توجد مدفوعات في هذه الفترة.")
-            y -= 20
-
-    elif report_type == "area":
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(50, y, "م | الاسم | رقم المشترك | المدفوع | المتأخرات")
-        y -= 15
-        c.drawString(50, y, "-" * 90)
-        y -= 20
-
-        c.setFont("Helvetica", 9)
-        counter = 1
-        for row in data:
-            name, acc, paid, due = row
-            line = f"{counter} | {name} | {acc} | {paid} | {due}"
-            c.drawString(50, y, line)
-            y -= 15
-            counter += 1
-            if y < 80:
-                c.showPage()
-                y = height - 50
-                c.setFont("Helvetica", 9)
-
-        y -= 20
-        c.setFont("Helvetica-Bold", 11)
-        if totals:
-            c.drawString(50, y, f"إجمالي المدفوعات: {totals.get('paid', 0)}")
-            y -= 20
-            c.drawString(50, y, f"إجمالي المتأخرات: {totals.get('due', 0)}")
-
-    elif report_type == "main":
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(50, y, "م | الاسم | رقم المشترك | المنطقة | المدفوع | المتأخرات")
-        y -= 15
-        c.drawString(50, y, "-" * 110)
-        y -= 20
-
-        c.setFont("Helvetica", 9)
-        counter = 1
-        for row in data:
-            name, acc, area, paid, due = row
-            line = f"{counter} | {name} | {acc} | {area} | {paid} | {due}"
-            c.drawString(50, y, line)
-            y -= 15
-            counter += 1
-            if y < 80:
-                c.showPage()
-                y = height - 50
-                c.setFont("Helvetica", 9)
-
-        y -= 20
-        c.setFont("Helvetica-Bold", 11)
-        if totals:
-            c.drawString(50, y, f"إجمالي المدفوعات: {totals.get('paid', 0)}")
-            y -= 20
-            c.drawString(50, y, f"إجمالي المتأخرات: {totals.get('due', 0)}")
-
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, 50, "مدير المشروع/ صالح الطويل")
-    c.drawString(50, 30, "التوقيع/ ____________________")
-
-    force_save_pdf(c)
-    finalize_pdf_file(filename)
-
-
-def generate_statement_pdf(filename: str, sub_row, from_date: date, to_date: date, readings, payments):
-    generate_pdf(
-        filename,
-        "subscriber",
-        from_date,
-        to_date,
-        (sub_row, readings, payments),
-    )
-
-
-def generate_area_or_global_pdf(
-    filename: str,
-    title: str,
-    from_date: date,
-    to_date: date,
-    total_c: int,
-    total_p: int,
-    bal: int,
-):
-    c = canvas.Canvas(filename, pagesize=A4)
-    width, height = A4
-    y = height - 60
-
-    c.setFont("Helvetica-Bold", 16)
-    c.drawCentredString(width / 2, y, "مشروع مياة قرية بيت الأقرع الأهلي")
-    y -= 30
-    c.setFont("Helvetica-Bold", 12)
-    c.drawCentredString(width / 2, y, title)
-    y -= 30
-
-    c.setFont("Helvetica", 11)
-    c.drawString(50, y, f"الفترة: من {from_date} إلى {to_date}")
-    y -= 20
-    c.drawString(50, y, f"إجمالي الاستهلاك (مبلغ): {total_c}")
-    y -= 20
-    c.drawString(50, y, f"إجمالي المدفوع: {total_p}")
-    y -= 20
-    c.drawString(50, y, f"إجمالي المتأخرات: {bal}")
-    y -= 40
-
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, 60, "مدير المشروع/ صالح الطويل")
-    c.drawString(50, 40, "التوقيع/ ____________________")
-
-    force_save_pdf(c)
-    finalize_pdf_file(filename)
-
-
-def generate_annual_pdf(filename: str):
-    c = canvas.Canvas(filename, pagesize=A4)
-    width, height = A4
-    y = height - 60
-
-    c.setFont("Helvetica-Bold", 16)
-    c.drawCentredString(width / 2, y, "تقرير الإغلاق السنوي لمشروع مياة قرية بيت الأقرع")
-    y -= 40
-
-    today = datetime.utcnow().date()
-    c.setFont("Helvetica", 12)
-    c.drawString(50, y, f"تاريخ التقرير: {today}")
-    y -= 30
-
-    from_date = date(today.year, 1, 1)
-    to_date = date(today.year, 12, 31)
-    total_c, total_p, bal = get_global_summary(from_date, to_date)
-
-    c.drawString(50, y, f"الفترة: من {from_date} إلى {to_date}")
-    y -= 25
-    c.drawString(50, y, f"إجمالي الاستهلاك (مبلغ): {total_c}")
-    y -= 20
-    c.drawString(50, y, f"إجمالي المدفوع: {total_p}")
-    y -= 20
-    c.drawString(50, y, f"إجمالي المتأخرات: {bal}")
-    y -= 40
-
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, 60, "مدير المشروع/ صالح الطويل")
-    c.drawString(50, 40, "التوقيع/ ____________________")
-
-    force_save_pdf(c)
-    finalize_pdf_file(filename)
-
-
-# ============ لوحات المفاتيح ============
+# ================== keyboards ==================
 def admin_keyboard():
     keyboard = [
         ["مشترك جديد", "تعديل مشترك"],
@@ -975,7 +54,7 @@ def subscriber_keyboard():
     )
 
 
-# ============ حالات ============
+# ================== states ==================
 STATE_KEY = "state"
 
 STATE_NONE = "NONE"
@@ -1024,24 +103,742 @@ STATE_ADMIN_SUB_STATEMENT_WAIT_TO = "ADMIN_SUB_STATEMENT_WAIT_TO"
 STATE_ADMIN_ANNUAL_CONFIRM = "ADMIN_ANNUAL_CONFIRM"
 STATE_ADMIN_ANNUAL_PASSWORD = "ADMIN_ANNUAL_PASSWORD"
 
+# حالات اختيار التاريخ (سنة/شهر/يوم) عبر الأزرار
+STATE_DATE_PICK_TARGET = "DATE_PICK_TARGET"  # نستخدمه مع user_data["date_target_state"]
 
-# ============ أدوات مساعدة ============
+
+# ================== DB helpers ==================
+def get_conn():
+    return sqlite3.connect(DB_PATH)
+
+
+def init_db():
+    conn = get_conn()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS admin (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            user_id INTEGER
+        )
+        """
+    )
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS areas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL
+        )
+        """
+    )
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS subscribers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            serial INTEGER NOT NULL,
+            account_no TEXT NOT NULL,
+            name TEXT NOT NULL,
+            area_id INTEGER,
+            chat_id INTEGER,
+            FOREIGN KEY(area_id) REFERENCES areas(id)
+        )
+        """
+    )
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS readings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subscriber_id INTEGER NOT NULL,
+            prev_read INTEGER NOT NULL,
+            curr_read INTEGER NOT NULL,
+            units INTEGER NOT NULL,
+            unit_price INTEGER NOT NULL,
+            amount INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(subscriber_id) REFERENCES subscribers(id)
+        )
+        """
+    )
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subscriber_id INTEGER NOT NULL,
+            amount INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(subscriber_id) REFERENCES subscribers(id)
+        )
+        """
+    )
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS actions_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action_type TEXT NOT NULL,
+            ref_id INTEGER,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS messages_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            msg_type TEXT NOT NULL,
+            target TEXT NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+    conn.commit()
+
+    # إدخال المناطق الثابتة إن لم تكن موجودة
+    areas = [
+        "الحمراء",
+        "الجبوبة",
+        "عرض الجبل",
+        "شمضات",
+        "حظي",
+        "الوادي",
+        "بيع مباشر",
+    ]
+    for a in areas:
+        try:
+            c.execute("INSERT INTO areas(name) VALUES(?)", (a,))
+        except sqlite3.IntegrityError:
+            pass
+
+    conn.commit()
+    conn.close()
+
+
+# ================== admin id helpers ==================
+def get_admin_user_id() -> Optional[int]:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM admin WHERE id=1")
+    row = c.fetchone()
+    conn.close()
+    if row and row[0]:
+        return row[0]
+    return None
+
+
+def set_admin_user_id(user_id: int):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO admin(id, user_id) VALUES(1, ?)", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+# ================== subscribers helpers ==================
+def get_area_by_name(name: str) -> Optional[int]:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT id FROM areas WHERE name=?", (name,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def get_all_areas():
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT id, name FROM areas ORDER BY id")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def create_subscriber(serial: int, account_no: str, name: str, area_name: str):
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        area_id = get_area_by_name(area_name)
+        if not area_id:
+            return None, "المنطقة غير موجودة في القائمة."
+        c.execute(
+            """
+            INSERT INTO subscribers(serial, account_no, name, area_id)
+            VALUES(?,?,?,?)
+            """,
+            (serial, account_no, name, area_id),
+        )
+        sub_id = c.lastrowid
+        conn.commit()
+        return sub_id, None
+    except Exception as e:
+        conn.rollback()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def update_subscriber(sub_id: int, name: str = None, area_name: str = None):
+    conn = get_conn()
+    c = conn.cursor()
+    if name is not None:
+        c.execute("UPDATE subscribers SET name=? WHERE id=?", (name, sub_id))
+    if area_name is not None:
+        area_id = get_area_by_name(area_name)
+        if area_id:
+            c.execute("UPDATE subscribers SET area_id=? WHERE id=?", (area_id, sub_id))
+    conn.commit()
+    conn.close()
+
+
+def find_subscriber_by_account(account_no: str):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
+        FROM subscribers s
+        LEFT JOIN areas a ON s.area_id = a.id
+        WHERE s.account_no=?
+        """,
+        (account_no,),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def find_subscriber_by_id(sub_id: int):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
+        FROM subscribers s
+        LEFT JOIN areas a ON s.area_id = a.id
+        WHERE s.id=?
+        """,
+        (sub_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def find_subscriber_by_chat(chat_id: int):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
+        FROM subscribers s
+        LEFT JOIN areas a ON s.area_id = a.id
+        WHERE s.chat_id=?
+        """,
+        (chat_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def find_subscriber_by_serial_and_account(serial: int, account_no: str):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
+        FROM subscribers s
+        LEFT JOIN areas a ON s.area_id = a.id
+        WHERE s.serial=? AND s.account_no=?
+        """,
+        (serial, account_no),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def link_subscriber_chat(serial: int, account_no: str, chat_id: int):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "UPDATE subscribers SET chat_id=? WHERE serial=? AND account_no=?",
+        (chat_id, serial, account_no),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_all_subscribers():
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
+        FROM subscribers s
+        LEFT JOIN areas a ON s.area_id = a.id
+        ORDER BY s.id
+        """
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def get_subscribers_by_area(area_id: int):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT s.id, s.serial, s.account_no, s.name, s.area_id, s.chat_id, a.name
+        FROM subscribers s
+        LEFT JOIN areas a ON s.area_id = a.id
+        WHERE s.area_id=?
+        ORDER BY s.id
+        """,
+        (area_id,),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def get_next_serial() -> int:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT MAX(serial) FROM subscribers")
+    row = c.fetchone()
+    conn.close()
+    max_serial = row[0] if row and row[0] else 0
+    return max_serial + 1
+
+
+# ================== readings & payments ==================
+UNIT_PRICE_DEFAULT = 500  # مثال
+
+
+def get_last_reading(sub_id: int) -> Optional[int]:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT curr_read FROM readings WHERE subscriber_id=? ORDER BY id DESC LIMIT 1",
+        (sub_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def add_reading(sub_id: int, curr_read: int):
+    prev = get_last_reading(sub_id)
+    if prev is None:
+        prev = 0
+    units = curr_read - prev
+    if units < 0:
+        units = 0
+    unit_price = UNIT_PRICE_DEFAULT
+    amount = units * unit_price
+    now = datetime.utcnow().isoformat()
+
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO readings(subscriber_id, prev_read, curr_read, units, unit_price, amount, created_at)
+        VALUES(?,?,?,?,?,?,?)
+        """,
+        (sub_id, prev, curr_read, units, unit_price, amount, now),
+    )
+    c.execute(
+        "INSERT INTO actions_log(action_type, ref_id, created_at) VALUES(?,?,?)",
+        ("reading", c.lastrowid, now),
+    )
+    conn.commit()
+    conn.close()
+    return prev, units, unit_price, amount
+
+
+def add_payment(sub_id: int, amount: int):
+    now = datetime.utcnow().isoformat()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO payments(subscriber_id, amount, created_at) VALUES(?,?,?)",
+        (sub_id, amount, now),
+    )
+    c.execute(
+        "INSERT INTO actions_log(action_type, ref_id, created_at) VALUES(?,?,?)",
+        ("payment", c.lastrowid, now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def undo_last_action():
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT id, action_type, ref_id FROM actions_log ORDER BY id DESC LIMIT 1")
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return False, "لا يوجد عمليات للتراجع عنها."
+    log_id, action_type, ref_id = row
+    if action_type == "reading":
+        c.execute("DELETE FROM readings WHERE id=?", (ref_id,))
+    elif action_type == "payment":
+        c.execute("DELETE FROM payments WHERE id=?", (ref_id,))
+    c.execute("DELETE FROM actions_log WHERE id=?", (log_id,))
+    conn.commit()
+    conn.close()
+    return True, "تم التراجع عن آخر عملية بنجاح."
+
+
+# ================== summaries ==================
+def get_subscriber_summary(sub_id: int):
+    conn = get_conn()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        SELECT prev_read, curr_read, units, unit_price, amount, created_at
+        FROM readings
+        WHERE subscriber_id=?
+        ORDER BY id DESC LIMIT 1
+        """,
+        (sub_id,),
+    )
+    last = c.fetchone()
+
+    c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM readings WHERE subscriber_id=?",
+        (sub_id,),
+    )
+    total_c = c.fetchone()[0]
+
+    c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM payments WHERE subscriber_id=?",
+        (sub_id,),
+    )
+    total_p = c.fetchone()[0]
+
+    conn.close()
+    balance = total_c - total_p
+    return {
+        "last_read": last,
+        "total_consumption_amount": total_c,
+        "total_payments": total_p,
+        "balance": balance,
+    }
+
+
+def get_subscriber_statement(sub_id: int, from_date: date, to_date: date):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT prev_read, curr_read, units, unit_price, amount, created_at
+        FROM readings
+        WHERE subscriber_id=? AND date(created_at) BETWEEN ? AND ?
+        ORDER BY created_at
+        """,
+        (sub_id, from_date.isoformat(), to_date.isoformat()),
+    )
+    readings = c.fetchall()
+
+    c.execute(
+        """
+        SELECT amount, created_at
+        FROM payments
+        WHERE subscriber_id=? AND date(created_at) BETWEEN ? AND ?
+        ORDER BY created_at
+        """,
+        (sub_id, from_date.isoformat(), to_date.isoformat()),
+    )
+    payments = c.fetchall()
+    conn.close()
+    return readings, payments
+
+
+def get_area_summary(area_id: int, from_date: date, to_date: date):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT s.id
+        FROM subscribers s
+        WHERE s.area_id=?
+        """,
+        (area_id,),
+    )
+    subs = [r[0] for r in c.fetchall()]
+    total_c = 0
+    total_p = 0
+    for sid in subs:
+        c.execute(
+            """
+            SELECT COALESCE(SUM(amount),0)
+            FROM readings
+            WHERE subscriber_id=? AND date(created_at) BETWEEN ? AND ?
+            """,
+            (sid, from_date.isoformat(), to_date.isoformat()),
+        )
+        total_c += c.fetchone()[0] or 0
+        c.execute(
+            """
+            SELECT COALESCE(SUM(amount),0)
+            FROM payments
+            WHERE subscriber_id=? AND date(created_at) BETWEEN ? AND ?
+            """,
+            (sid, from_date.isoformat(), to_date.isoformat()),
+        )
+        total_p += c.fetchone()[0] or 0
+    conn.close()
+    bal = total_c - total_p
+    return total_c, total_p, bal
+
+
+def get_global_summary(from_date: date, to_date: date):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT COALESCE(SUM(amount),0)
+        FROM readings
+        WHERE date(created_at) BETWEEN ? AND ?
+        """,
+        (from_date.isoformat(), to_date.isoformat()),
+    )
+    total_c = c.fetchone()[0] or 0
+
+    c.execute(
+        """
+        SELECT COALESCE(SUM(amount),0)
+        FROM payments
+        WHERE date(created_at) BETWEEN ? AND ?
+        """,
+        (from_date.isoformat(), to_date.isoformat()),
+    )
+    total_p = c.fetchone()[0] or 0
+    conn.close()
+    bal = total_c - total_p
+    return total_c, total_p, bal
+
+
+def log_message(msg_type: str, target: str, text: str):
+    conn = get_conn()
+    c = conn.cursor()
+    now = datetime.utcnow().isoformat()
+    c.execute(
+        "INSERT INTO messages_log(msg_type, target, text, created_at) VALUES(?,?,?,?)",
+        (msg_type, target, text, now),
+    )
+    conn.commit()
+    conn.close()
+
+
+# ================== PDF helpers ==================
+def _draw_header(c: canvas.Canvas, title: str, period: str):
+    c.setFont("Helvetica-Bold", 14)
+    c.drawCentredString(105 * mm, 280 * mm, "مشروع مياة قرية بيت الأقرع الأهلي")
+    c.setFont("Helvetica-Bold", 12)
+    c.drawCentredString(105 * mm, 272 * mm, title)
+    c.setFont("Helvetica", 10)
+    c.drawCentredString(105 * mm, 266 * mm, period)
+
+
+def generate_statement_pdf(
+    filename: str,
+    sub_row,
+    from_date: date,
+    to_date: date,
+    readings,
+    payments,
+):
+    c = canvas.Canvas(filename, pagesize=A4)
+    period = f"الفترة من {from_date} إلى {to_date}"
+    _draw_header(c, "كشف حساب مشترك", period)
+
+    x_margin = 20 * mm
+    y = 250 * mm
+
+    # بيانات المشترك
+    c.setFont("Helvetica", 10)
+    c.drawString(x_margin, y, f"الاسم: {sub_row[3]}")
+    y -= 6 * mm
+    c.drawString(x_margin, y, f"الرقم التسلسلي: {sub_row[1]}")
+    y -= 6 * mm
+    c.drawString(x_margin, y, f"رقم المشترك (رقم العدّاد): {sub_row[2]}")
+    y -= 6 * mm
+    c.drawString(x_margin, y, f"المنطقة: {sub_row[6] or '-'}")
+    y -= 10 * mm
+
+    # جدول القراءات
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(x_margin, y, "القراءات:")
+    y -= 6 * mm
+    c.setFont("Helvetica", 9)
+    c.drawString(x_margin, y, "التاريخ | السابقة | الحالية | الوحدات | سعر الوحدة | المبلغ")
+    y -= 4 * mm
+    c.line(x_margin, y, 190 * mm, y)
+    y -= 4 * mm
+
+    for r in readings:
+        if y < 40 * mm:
+            c.showPage()
+            y = 270 * mm
+        prev_read, curr_read, units, unit_price, amount, created_at = r
+        line = f"{created_at[:10]} | {prev_read} | {curr_read} | {units} | {unit_price} | {amount}"
+        c.drawString(x_margin, y, line)
+        y -= 5 * mm
+
+    y -= 6 * mm
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(x_margin, y, "المدفوعات:")
+    y -= 6 * mm
+    c.setFont("Helvetica", 9)
+    c.drawString(x_margin, y, "التاريخ | المبلغ")
+    y -= 4 * mm
+    c.line(x_margin, y, 190 * mm, y)
+    y -= 4 * mm
+
+    for p in payments:
+        if y < 40 * mm:
+            c.showPage()
+            y = 270 * mm
+        amount, created_at = p
+        line = f"{created_at[:10]} | {amount}"
+        c.drawString(x_margin, y, line)
+        y -= 5 * mm
+
+    # ملخص
+    summary = get_subscriber_summary(sub_row[0])
+    y -= 8 * mm
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(
+        x_margin,
+        y,
+        f"إجمالي الاستهلاك (مبلغ): {summary['total_consumption_amount']}",
+    )
+    y -= 6 * mm
+    c.drawString(x_margin, y, f"إجمالي المدفوع: {summary['total_payments']}")
+    y -= 6 * mm
+    c.drawString(x_margin, y, f"إجمالي المتأخرات: {summary['balance']}")
+
+    c.showPage()
+    c.save()
+
+
+def generate_area_or_global_pdf(
+    filename: str,
+    title: str,
+    from_date: date,
+    to_date: date,
+    total_c: int,
+    total_p: int,
+    bal: int,
+    rows: List[tuple] = None,
+    is_global: bool = False,
+):
+    c = canvas.Canvas(filename, pagesize=A4)
+    period = f"الفترة من {from_date} إلى {to_date}"
+    _draw_header(c, title, period)
+
+    x_margin = 15 * mm
+    y = 250 * mm
+    c.setFont("Helvetica", 9)
+
+    # رأس الجدول
+    if is_global:
+        header = "م | الاسم | رقم المشترك | المنطقة | المدفوع | المتأخرات"
+    else:
+        header = "م | الاسم | رقم المشترك | المدفوع | المتأخرات"
+
+    c.drawString(x_margin, y, header)
+    y -= 4 * mm
+    c.line(x_margin, y, 190 * mm, y)
+    y -= 4 * mm
+
+    if rows:
+        idx = 1
+        for row in rows:
+            if y < 40 * mm:
+                c.showPage()
+                y = 270 * mm
+                c.setFont("Helvetica", 9)
+                c.drawString(x_margin, y, header)
+                y -= 4 * mm
+                c.line(x_margin, y, 190 * mm, y)
+                y -= 4 * mm
+
+            if is_global:
+                name, account_no, area_name, paid, debt = row
+                line = f"{idx} | {name} | {account_no} | {area_name} | {paid} | {debt}"
+            else:
+                name, account_no, paid, debt = row
+                line = f"{idx} | {name} | {account_no} | {paid} | {debt}"
+            c.drawString(x_margin, y, line)
+            y -= 5 * mm
+            idx += 1
+
+    y -= 6 * mm
+    c.line(x_margin, y, 190 * mm, y)
+    y -= 6 * mm
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(x_margin, y, f"إجمالي الاستهلاك (مبلغ): {total_c}")
+    y -= 6 * mm
+    c.drawString(x_margin, y, f"إجمالي المدفوعات: {total_p}")
+    y -= 6 * mm
+    c.drawString(x_margin, y, f"إجمالي المتأخرات: {bal}")
+    y -= 10 * mm
+    c.drawString(x_margin, y, "مدير المشروع/ صالح الطويل")
+    y -= 6 * mm
+    c.drawString(x_margin, y, "التوقيع/ ____________________")
+
+    c.showPage()
+    c.save()
+
+
+def generate_annual_pdf(filename: str):
+    # تقرير بسيط سنوي
+    today = datetime.utcnow().date()
+    from_date = date(today.year, 1, 1)
+    to_date = date(today.year, 12, 31)
+    total_c, total_p, bal = get_global_summary(from_date, to_date)
+
+    c = canvas.Canvas(filename, pagesize=A4)
+    period = f"الفترة من {from_date} إلى {to_date}"
+    _draw_header(c, "تقرير الإغلاق السنوي", period)
+
+    x_margin = 20 * mm
+    y = 250 * mm
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(x_margin, y, f"إجمالي الاستهلاك (مبلغ): {total_c}")
+    y -= 8 * mm
+    c.drawString(x_margin, y, f"إجمالي المدفوع: {total_p}")
+    y -= 8 * mm
+    c.drawString(x_margin, y, f"إجمالي المتأخرات: {bal}")
+    y -= 15 * mm
+    c.drawString(x_margin, y, "مدير المشروع/ صالح الطويل")
+    y -= 8 * mm
+    c.drawString(x_margin, y, "التوقيع/ ____________________")
+
+    c.showPage()
+    c.save()
+
+
+# ================== helpers ==================
 def is_admin(update: Update) -> bool:
     admin_id = get_admin_user_id()
     if not admin_id:
         return False
     return update.effective_user and update.effective_user.id == admin_id
-
-
-def parse_date_str(text: str):
-    try:
-        parts = text.strip().split("/")
-        if len(parts) != 3:
-            return None
-        d, m, y = map(int, parts)
-        return date(y, m, d)
-    except Exception:
-        return None
 
 
 def format_subscriber_info(sub):
@@ -1077,15 +874,120 @@ def format_subscriber_status(sub_id: int):
     text += f"إجمالي المدفوع: {summary['total_payments']}\n"
     text += f"إجمالي المتأخرات: {summary['balance']}\n"
     return text
+  # ================== date picker via inline ==================
+# سنستخدمه بدل إدخال التاريخ يدوياً
+def build_year_keyboard(current_year: int, years_back: int = 5):
+    buttons = []
+    for y in range(current_year, current_year - years_back - 1, -1):
+        buttons.append([InlineKeyboardButton(str(y), callback_data=f"date_year_{y}")])
+    return InlineKeyboardMarkup(buttons)
 
 
-# ============ كشف مشترك من جهة المدير ============
+def build_month_keyboard():
+    buttons = []
+    for m in range(1, 13):
+        buttons.append(
+            [InlineKeyboardButton(str(m), callback_data=f"date_month_{m}")]
+        )
+    return InlineKeyboardMarkup(buttons)
+
+
+def build_day_keyboard(year: int, month: int):
+    import calendar
+
+    days_in_month = calendar.monthrange(year, month)[1]
+    buttons = []
+    row = []
+    for d in range(1, days_in_month + 1):
+        row.append(InlineKeyboardButton(str(d), callback_data=f"date_day_{d}"))
+        if len(row) == 7:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    return InlineKeyboardMarkup(buttons)
+
+
+async def start_date_pick(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    target_state: str,
+    prompt_text: str,
+):
+    user_data = context.user_data
+    user_data[STATE_KEY] = STATE_DATE_PICK_TARGET
+    user_data["date_target_state"] = target_state
+    user_data["date_pick_year"] = None
+    user_data["date_pick_month"] = None
+    user_data["date_pick_day"] = None
+
+    now = datetime.utcnow()
+    kb = build_year_keyboard(now.year)
+    await update.message.reply_text(
+        prompt_text + "\nاختر السنة:",
+        reply_markup=kb,
+    )
+
+
+async def handle_date_pick_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    query = update.callback_query
+    data = query.data
+    user_data = context.user_data
+
+    if user_data.get(STATE_KEY) != STATE_DATE_PICK_TARGET:
+        return False
+
+    year = user_data.get("date_pick_year")
+    month = user_data.get("date_pick_month")
+    day = user_data.get("date_pick_day")
+
+    if data.startswith("date_year_"):
+        year = int(data.split("_")[-1])
+        user_data["date_pick_year"] = year
+        kb = build_month_keyboard()
+        await query.edit_message_text(
+            f"السنة المختارة: {year}\nاختر الشهر:",
+            reply_markup=kb,
+        )
+        return True
+
+    if data.startswith("date_month_") and year:
+        month = int(data.split("_")[-1])
+        user_data["date_pick_month"] = month
+        kb = build_day_keyboard(year, month)
+        await query.edit_message_text(
+            f"السنة: {year} - الشهر: {month}\nاختر اليوم:",
+            reply_markup=kb,
+        )
+        return True
+
+    if data.startswith("date_day_") and year and month:
+        day = int(data.split("_")[-1])
+        user_data["date_pick_day"] = day
+        d = date(year, month, day)
+        target_state = user_data.get("date_target_state")
+
+        # تنظيف حالة اختيار التاريخ
+        user_data[STATE_KEY] = target_state
+        user_data["picked_date"] = d
+
+        await query.edit_message_text(
+            f"تم اختيار التاريخ: {d}",
+        )
+        return True
+
+    return False
+
+
+# ================== admin subscriber statement ==================
 async def handle_admin_sub_statement(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = context.user_data
-    text = update.message.text
     state = user_data.get(STATE_KEY, STATE_NONE)
 
     if state == STATE_ADMIN_SUB_STATEMENT_WAIT_ACCOUNT:
+        text = update.message.text.strip()
         sub = find_subscriber_by_account(text)
         if not sub:
             await update.message.reply_text(
@@ -1095,33 +997,33 @@ async def handle_admin_sub_statement(update: Update, context: ContextTypes.DEFAU
             return
 
         user_data["stmt_sub_id"] = sub[0]
-        await update.message.reply_text(
-            "أدخل تاريخ البداية بصيغة يوم/شهر/سنة (مثال: 01/01/2026):"
+        await start_date_pick(
+            update,
+            context,
+            STATE_ADMIN_SUB_STATEMENT_WAIT_FROM,
+            "اختر تاريخ البداية:",
         )
-        user_data[STATE_KEY] = STATE_ADMIN_SUB_STATEMENT_WAIT_FROM
         return
 
     if state == STATE_ADMIN_SUB_STATEMENT_WAIT_FROM:
-        d = parse_date_str(text)
+        d = user_data.get("picked_date")
         if not d:
-            await update.message.reply_text(
-                "صيغة التاريخ غير صحيحة. مثال صحيح: 01/01/2026"
-            )
+            await update.message.reply_text("لم يتم اختيار تاريخ صحيح.")
             return
-
         user_data["stmt_from_date"] = d
-        await update.message.reply_text(
-            "أدخل تاريخ النهاية بصيغة يوم/شهر/سنة (مثال: 10/03/2026):"
+        await update.message.reply_text("الآن اختر تاريخ النهاية:")
+        await start_date_pick(
+            update,
+            context,
+            STATE_ADMIN_SUB_STATEMENT_WAIT_TO,
+            "اختر تاريخ النهاية:",
         )
-        user_data[STATE_KEY] = STATE_ADMIN_SUB_STATEMENT_WAIT_TO
         return
 
     if state == STATE_ADMIN_SUB_STATEMENT_WAIT_TO:
-        d = parse_date_str(text)
+        d = user_data.get("picked_date")
         if not d:
-            await update.message.reply_text(
-                "صيغة التاريخ غير صحيحة. مثال صحيح: 10/03/2026"
-            )
+            await update.message.reply_text("لم يتم اختيار تاريخ صحيح.")
             return
 
         if d < user_data["stmt_from_date"]:
@@ -1174,7 +1076,7 @@ async def handle_admin_sub_statement(update: Update, context: ContextTypes.DEFAU
         return
 
 
-# ============ توجيه رسائل المدير ============
+# ================== admin text router ==================
 async def admin_text_router(
     update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: str
 ):
@@ -1258,11 +1160,12 @@ async def admin_text_router(
             return
 
         if text == "كشف رئيسي":
-            await update.message.reply_text(
-                "أدخل تاريخ البداية بصيغة يوم/شهر/سنة (مثال: 01/01/2026):",
-                reply_markup=admin_keyboard(),
+            await start_date_pick(
+                update,
+                context,
+                STATE_ADMIN_MAIN_WAIT_FROM,
+                "اختر تاريخ البداية للكشف الرئيسي:",
             )
-            user_data[STATE_KEY] = STATE_ADMIN_MAIN_WAIT_FROM
             return
 
         if text == "إرسال رسالة":
@@ -1310,38 +1213,17 @@ async def admin_text_router(
 
     if state == STATE_ADMIN_NEW_SUB_ACCOUNT:
         user_data["new_sub_account"] = text
-        await update.message.reply_text(
-            "الرجاء إدخال اسم المنطقة:",
-            reply_markup=admin_keyboard(),
-        )
-        user_data[STATE_KEY] = STATE_ADMIN_NEW_SUB_AREA
-        return
-
-    if state == STATE_ADMIN_NEW_SUB_AREA:
-        user_data["new_sub_area"] = text
-        serial = user_data.get("new_sub_serial")
-        name = user_data.get("new_sub_name")
-        account_no = user_data.get("new_sub_account")
-        area_name = user_data.get("new_sub_area")
-
-        preview = (
-            "معاينة بيانات المشترك الجديد:\n\n"
-            f"الرقم التسلسلي: {serial}\n"
-            f"رقم المشترك: {account_no}\n"
-            f"الاسم: {name}\n"
-            f"المنطقة: {area_name}\n\n"
-            "هل تريد حفظ المشترك؟"
-        )
+        # الآن نعرض قائمة المناطق للاختيار
+        areas = get_all_areas()
         buttons = [
-            [
-                InlineKeyboardButton("حفظ", callback_data="newsub_save"),
-                InlineKeyboardButton("إلغاء", callback_data="newsub_cancel"),
-            ]
+            [InlineKeyboardButton(a[1], callback_data=f"new_area_{a[0]}")]
+            for a in areas
         ]
         await update.message.reply_text(
-            preview, reply_markup=InlineKeyboardMarkup(buttons)
+            "اختر منطقة المشترك:",
+            reply_markup=InlineKeyboardMarkup(buttons),
         )
-        user_data[STATE_KEY] = STATE_NONE
+        user_data[STATE_KEY] = STATE_ADMIN_NEW_SUB_AREA
         return
 
     if state == STATE_ADMIN_EDIT_SUB_WAIT_ACCOUNT:
@@ -1377,10 +1259,11 @@ async def admin_text_router(
         return
 
     if state == STATE_ADMIN_EDIT_SUB_NEW_AREA:
-        sub_id = user_data.get("edit_sub_id")
-        update_subscriber(sub_id, area_name=text)
+        # هنا نتوقع أن المدير يكتب اسم منطقة، لكننا نريدها من القائمة فقط
+        # يمكن تجاهل الإدخال النصي أو إعادة توجيهه لاحقاً
         await update.message.reply_text(
-            "تم تعديل المنطقة بنجاح.", reply_markup=admin_keyboard()
+            "تعديل المنطقة يتم من خلال قائمة المناطق فقط.",
+            reply_markup=admin_keyboard(),
         )
         user_data[STATE_KEY] = STATE_NONE
         return
@@ -1506,26 +1389,24 @@ async def admin_text_router(
         return
 
     if state == STATE_ADMIN_AREA_WAIT_FROM:
-        d = parse_date_str(text)
+        d = user_data.get("picked_date")
         if not d:
-            await update.message.reply_text(
-                "صيغة التاريخ غير صحيحة. مثال صحيح: 01/01/2026"
-            )
+            await update.message.reply_text("لم يتم اختيار تاريخ صحيح.")
             return
         user_data["area_from_date"] = d
-        await update.message.reply_text(
-            "أدخل تاريخ النهاية بصيغة يوم/شهر/سنة (مثال: 10/03/2026):",
-            reply_markup=admin_keyboard(),
+        await update.message.reply_text("الآن اختر تاريخ النهاية:")
+        await start_date_pick(
+            update,
+            context,
+            STATE_ADMIN_AREA_WAIT_TO,
+            "اختر تاريخ النهاية:",
         )
-        user_data[STATE_KEY] = STATE_ADMIN_AREA_WAIT_TO
         return
 
     if state == STATE_ADMIN_AREA_WAIT_TO:
-        d = parse_date_str(text)
+        d = user_data.get("picked_date")
         if not d:
-            await update.message.reply_text(
-                "صيغة التاريخ غير صحيحة. مثال صحيح: 10/03/2026"
-            )
+            await update.message.reply_text("لم يتم اختيار تاريخ صحيح.")
             return
         if d < user_data["area_from_date"]:
             await update.message.reply_text("تاريخ النهاية يجب أن يكون بعد تاريخ البداية.")
@@ -1552,6 +1433,16 @@ async def admin_text_router(
             "هل تريد إرسال كشف تفصيلي لكل مشترك في هذه المنطقة؟"
         )
 
+        # تجهيز صفوف المنطقة للكشف PDF
+        subs = get_subscribers_by_area(area_id)
+        rows = []
+        for s in subs:
+            sid = s[0]
+            summary = get_subscriber_summary(sid)
+            paid = summary["total_payments"]
+            debt = summary["balance"]
+            rows.append((s[3], s[2], paid, debt))
+
         filename = f"area_{area_id}_{datetime.utcnow().timestamp()}.pdf"
         generate_area_or_global_pdf(
             filename,
@@ -1561,6 +1452,8 @@ async def admin_text_router(
             total_c,
             total_p,
             bal,
+            rows=rows,
+            is_global=False,
         )
 
         await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup([
@@ -1578,26 +1471,24 @@ async def admin_text_router(
         return
 
     if state == STATE_ADMIN_MAIN_WAIT_FROM:
-        d = parse_date_str(text)
+        d = user_data.get("picked_date")
         if not d:
-            await update.message.reply_text(
-                "صيغة التاريخ غير صحيحة. مثال صحيح: 01/01/2026"
-            )
+            await update.message.reply_text("لم يتم اختيار تاريخ صحيح.")
             return
         user_data["main_from_date"] = d
-        await update.message.reply_text(
-            "أدخل تاريخ النهاية بصيغة يوم/شهر/سنة (مثال: 10/03/2026):",
-            reply_markup=admin_keyboard(),
+        await update.message.reply_text("الآن اختر تاريخ النهاية:")
+        await start_date_pick(
+            update,
+            context,
+            STATE_ADMIN_MAIN_WAIT_TO,
+            "اختر تاريخ النهاية:",
         )
-        user_data[STATE_KEY] = STATE_ADMIN_MAIN_WAIT_TO
         return
 
     if state == STATE_ADMIN_MAIN_WAIT_TO:
-        d = parse_date_str(text)
+        d = user_data.get("picked_date")
         if not d:
-            await update.message.reply_text(
-                "صيغة التاريخ غير صحيحة. مثال صحيح: 10/03/2026"
-            )
+            await update.message.reply_text("لم يتم اختيار تاريخ صحيح.")
             return
         if d < user_data["main_from_date"]:
             await update.message.reply_text("تاريخ النهاية يجب أن يكون بعد تاريخ البداية.")
@@ -1607,6 +1498,17 @@ async def admin_text_router(
         to_date = d
         user_data["main_to_date"] = to_date
         total_c, total_p, bal = get_global_summary(from_date, to_date)
+
+        # تجهيز صفوف الكشف الرئيسي
+        subs = get_all_subscribers()
+        rows = []
+        for s in subs:
+            sid = s[0]
+            summary = get_subscriber_summary(sid)
+            paid = summary["total_payments"]
+            debt = summary["balance"]
+            rows.append((s[3], s[2], s[6] or "-", paid, debt))
+
         msg = (
             "كشف رئيسي لجميع المناطق:\n"
             f"الفترة: من {from_date} إلى {to_date}\n\n"
@@ -1625,6 +1527,8 @@ async def admin_text_router(
             total_c,
             total_p,
             bal,
+            rows=rows,
+            is_global=True,
         )
 
         await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup([
@@ -1738,143 +1642,57 @@ async def admin_text_router(
             caption="تقرير الإغلاق السنوي (PDF).",
         )
 
-        subs = get_all_subscribers()
-        today = datetime.utcnow().date()
-        from_date = date(today.year, 1, 1)
-        to_date = date(today.year, 12, 31)
-        for sub in subs:
-            sub_id = sub[0]
-            chat_id = sub[5]
-            if not chat_id:
-                continue
-            readings, payments = get_subscriber_statement(sub_id, from_date, to_date)
-            stmt_file = f"annual_stmt_{sub_id}_{datetime.utcnow().timestamp()}.pdf"
-            generate_statement_pdf(stmt_file, sub, from_date, to_date, readings, payments)
-            text_msg = (
-                "كشف حسابك السنوي:\n\n"
-                + format_subscriber_info(sub)
-                + f"الفترة: من {from_date} إلى {to_date}\n"
-            )
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=text_msg)
-                await context.bot.send_document(
-                    chat_id=chat_id,
-                    document=InputFile(stmt_file, filename=os.path.basename(stmt_file)),
-                    caption="كشف حسابك السنوي (PDF).",
-                )
-            except Exception:
-                pass
-
-        await update.message.reply_text(
-            "تم تنفيذ الإغلاق السنوي وإرسال كشوف الحساب للمشتركين.",
-            reply_markup=admin_keyboard(),
-        )
         user_data[STATE_KEY] = STATE_NONE
         return
-
-    await update.message.reply_text(
-        "لم أفهم هذا الإدخال في هذه المرحلة.\nاستخدم الأزرار أو زر 'إلغاء العملية' للبدء من جديد.",
-        reply_markup=admin_keyboard(),
-    )
-
-
-# ============ توجيه رسائل المشترك ============
-async def subscriber_text_router(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: str
-):
-    user_data = context.user_data
-    sub = find_subscriber_by_chat(update.effective_chat.id)
-    if not sub:
-        await update.message.reply_text(
-            "حسابك غير مرتبط كمشترك.\nأرسل /start واتبع التعليمات للربط.",
-            reply_markup=subscriber_keyboard(),
-        )
-        user_data[STATE_KEY] = STATE_NONE
-        return
-
-    sub_id = sub[0]
-
-    if state == STATE_SUB_STATEMENT_WAIT_FROM:
-        d = parse_date_str(text)
-        if not d:
-            await update.message.reply_text(
-                "صيغة التاريخ غير صحيحة. استخدم يوم/شهر/سنة.",
-                reply_markup=subscriber_keyboard(),
-            )
-            return
-        user_data["sub_stmt_from"] = d
-        await update.message.reply_text(
-            "أدخل تاريخ النهاية بصيغة يوم/شهر/سنة:",
-            reply_markup=subscriber_keyboard(),
-        )
-        user_data[STATE_KEY] = STATE_SUB_STATEMENT_WAIT_TO
-        return
-
-    if state == STATE_SUB_STATEMENT_WAIT_TO:
-        d = parse_date_str(text)
-        if not d:
-            await update.message.reply_text(
-                "صيغة التاريخ غير صحيحة. استخدم يوم/شهر/سنة.",
-                reply_markup=subscriber_keyboard(),
-            )
-            return
-        from_date = user_data["sub_stmt_from"]
-        if d < from_date:
-            await update.message.reply_text(
-                "تاريخ النهاية يجب أن يكون بعد البداية.",
-                reply_markup=subscriber_keyboard(),
-            )
-            return
-        to_date = d
-        user_data["sub_stmt_to"] = to_date
-        readings, payments = get_subscriber_statement(
-            sub_id, from_date, to_date
-        )
-        filename = f"sub_stmt_{sub_id}_{datetime.utcnow().timestamp()}.pdf"
-        generate_pdf(
-            filename,
-            "subscriber",
-            from_date,
-            to_date,
-            (sub, readings, payments),
-        )
-        await update.message.reply_document(
-            document=InputFile(filename, filename=os.path.basename(filename)),
-            caption="كشف حسابك (PDF).",
-        )
-        await update.message.reply_text(
-            "تم إرسال كشف الحساب.", reply_markup=subscriber_keyboard()
-        )
-        user_data[STATE_KEY] = STATE_NONE
-        return
-
-    if text == "استعلام":
-        info = format_subscriber_status(sub_id)
-        await update.message.reply_text(info, reply_markup=subscriber_keyboard())
-        return
-
-    if text == "كشف حساب":
-        await update.message.reply_text(
-            "أدخل تاريخ البداية بصيغة يوم/شهر/سنة:",
-            reply_markup=subscriber_keyboard(),
-        )
-        user_data[STATE_KEY] = STATE_SUB_STATEMENT_WAIT_FROM
-        return
-
-    await update.message.reply_text(
-        "استخدم الأزرار المتاحة في حساب المشترك.",
-        reply_markup=subscriber_keyboard(),
-    )
-    user_data[STATE_KEY] = STATE_NONE
-
-
-# ============ أزرار Inline ============
+      # ================== callback handler ==================
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
     user_data = context.user_data
     state = user_data.get(STATE_KEY, STATE_NONE)
+
+    # أولاً: معالجة اختيار التاريخ إن وجد
+    handled = await handle_date_pick_callback(update, context)
+    if handled:
+        return
+
+    # اختيار منطقة للمشترك الجديد
+    if state == STATE_ADMIN_NEW_SUB_AREA and data.startswith("new_area_"):
+        area_id = int(data.split("_")[-1])
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT name FROM areas WHERE id=?", (area_id,))
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            await query.edit_message_text("لم يتم العثور على المنطقة.")
+            user_data[STATE_KEY] = STATE_NONE
+            return
+        area_name = row[0]
+        user_data["new_sub_area"] = area_name
+
+        serial = user_data.get("new_sub_serial")
+        name = user_data.get("new_sub_name")
+        account_no = user_data.get("new_sub_account")
+
+        preview = (
+            "معاينة بيانات المشترك الجديد:\n\n"
+            f"الرقم التسلسلي: {serial}\n"
+            f"رقم المشترك: {account_no}\n"
+            f"الاسم: {name}\n"
+            f"المنطقة: {area_name}\n\n"
+            "هل تريد حفظ المشترك؟"
+        )
+        buttons = [
+            [
+                InlineKeyboardButton("حفظ", callback_data="newsub_save"),
+                InlineKeyboardButton("إلغاء", callback_data="newsub_cancel"),
+            ]
+        ]
+        await query.edit_message_text(preview, reply_markup=InlineKeyboardMarkup(buttons))
+        user_data[STATE_KEY] = STATE_NONE
+        return
 
     if data == "newsub_save":
         serial = user_data.get("new_sub_serial")
@@ -1917,9 +1735,40 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_data[STATE_KEY] = STATE_ADMIN_EDIT_SUB_NEW_NAME
             return
         if data == "edit_area":
-            await query.edit_message_text("الرجاء إدخال اسم المنطقة الجديدة:")
-            user_data[STATE_KEY] = STATE_ADMIN_EDIT_SUB_NEW_AREA
+            # عرض قائمة المناطق لتعديل منطقة المشترك
+            areas = get_all_areas()
+            buttons = [
+                [InlineKeyboardButton(a[1], callback_data=f"edit_area_{a[0]}")]
+                for a in areas
+            ]
+            await query.edit_message_text(
+                "اختر المنطقة الجديدة للمشترك:",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
             return
+
+    if data.startswith("edit_area_"):
+        area_id = int(data.split("_")[-1])
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT name FROM areas WHERE id=?", (area_id,))
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            await query.edit_message_text("لم يتم العثور على المنطقة.")
+            user_data[STATE_KEY] = STATE_NONE
+            return
+        area_name = row[0]
+        sub_id = user_data.get("edit_sub_id")
+        update_subscriber(sub_id, area_name=area_name)
+        await query.edit_message_text("تم تعديل المنطقة بنجاح.")
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="اختر من لوحة المدير:",
+            reply_markup=admin_keyboard(),
+        )
+        user_data[STATE_KEY] = STATE_NONE
+        return
 
     if state == STATE_ADMIN_READ_CONFIRM:
         if data == "read_save":
@@ -2041,9 +1890,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         area_id = int(data.split("_")[1])
         user_data["area_id"] = area_id
         await query.edit_message_text(
-            "أدخل تاريخ البداية بصيغة يوم/شهر/سنة:",
+            "اختر تاريخ البداية:",
         )
-        user_data[STATE_KEY] = STATE_ADMIN_AREA_WAIT_FROM
+        await start_date_pick(
+            update,
+            context,
+            STATE_ADMIN_AREA_WAIT_FROM,
+            "اختر تاريخ البداية:",
+        )
         return
 
     if data.startswith("area_send_"):
@@ -2183,7 +2037,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[STATE_KEY] = STATE_NONE
 
 
-# ============ بحث مشترك للرسائل ============
+# ================== msg_sub_text_handler ==================
 async def msg_sub_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = context.user_data
     text = update.message.text.strip()
@@ -2239,7 +2093,105 @@ async def text_handler_wrapper(update: Update, context: ContextTypes.DEFAULT_TYP
         await text_handler(update, context)
 
 
-# ============ أوامر البداية ============
+# ================== subscriber side ==================
+async def subscriber_text_router(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: str
+):
+    # حالة اختيار تاريخ البداية لكشف المشترك
+    if state == "SUB_STMT_WAIT_FROM":
+        d = context.user_data.get("picked_date")
+        if not d:
+            await update.message.reply_text("لم يتم اختيار تاريخ صحيح.")
+            return
+
+        context.user_data["sub_stmt_from"] = d
+
+        await start_date_pick(
+            update,
+            context,
+            "SUB_STMT_WAIT_TO",
+            "اختر تاريخ النهاية لكشف الحساب:"
+        )
+        context.user_data[STATE_KEY] = "SUB_STMT_WAIT_TO"
+        return
+
+    # حالة اختيار تاريخ النهاية لكشف المشترك
+    if state == "SUB_STMT_WAIT_TO":
+        d = context.user_data.get("picked_date")
+        if not d:
+            await update.message.reply_text("لم يتم اختيار تاريخ صحيح.")
+            return
+
+        from_date = context.user_data["sub_stmt_from"]
+        to_date = d
+
+        if to_date < from_date:
+            await update.message.reply_text("تاريخ النهاية يجب أن يكون بعد البداية.")
+            return
+
+        sub_id = context.user_data["sub_stmt_id"]
+        sub = find_subscriber_by_id(sub_id)
+
+        readings, payments = get_subscriber_statement(sub_id, from_date, to_date)
+
+        filename = f"sub_stmt_{sub_id}_{datetime.utcnow().timestamp()}.pdf"
+        generate_statement_pdf(filename, sub, from_date, to_date, readings, payments)
+
+        text_msg = (
+            "كشف حسابك:\n\n"
+            + format_subscriber_info(sub)
+            + f"الفترة: من {from_date} إلى {to_date}\n"
+        )
+
+        await update.message.reply_text(text_msg, reply_markup=subscriber_keyboard())
+        await update.message.reply_document(
+            document=InputFile(filename, filename=os.path.basename(filename)),
+            caption="كشف حسابك (PDF).",
+        )
+
+        context.user_data[STATE_KEY] = STATE_NONE
+        return
+
+    # هنا يمكنك إضافة منطق "استعلام" و "كشف حساب" للمشترك
+    if text == "استعلام":
+        sub = find_subscriber_by_chat(update.effective_chat.id)
+        if not sub:
+            await update.message.reply_text(
+                "لم يتم ربط حسابك بعد. أرسل /start للربط.",
+                reply_markup=subscriber_keyboard(),
+            )
+            return
+        info = format_subscriber_status(sub[0])
+        await update.message.reply_text(info, reply_markup=subscriber_keyboard())
+        return
+
+    if text == "كشف حساب":
+        sub = find_subscriber_by_chat(update.effective_chat.id)
+        if not sub:
+            await update.message.reply_text(
+                "لم يتم ربط حسابك بعد. أرسل /start للربط.",
+                reply_markup=subscriber_keyboard(),
+            )
+            return
+
+        # بدء اختيار تاريخ البداية
+        await start_date_pick(
+            update,
+            context,
+            "SUB_STMT_WAIT_FROM",
+            "اختر تاريخ البداية لكشف الحساب:"
+        )
+        context.user_data[STATE_KEY] = "SUB_STMT_WAIT_FROM"
+        context.user_data["sub_stmt_id"] = sub[0]
+        return
+
+    await update.message.reply_text(
+        "استخدم الأزرار المتاحة في الأسفل.",
+        reply_markup=subscriber_keyboard(),
+    )
+
+
+# ================== start & admin commands ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = context.user_data
     user_data.setdefault(STATE_KEY, STATE_NONE)
@@ -2297,7 +2249,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data[STATE_KEY] = STATE_NONE
 
 
-# ============ هاندلر النص ============
+# ================== text_handler ==================
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = context.user_data
     state = user_data.get(STATE_KEY, STATE_NONE)
@@ -2341,8 +2293,18 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         link_subscriber_chat(serial_int, account_no, chat_id)
+
+        # رسالة الترحيب المعدلة
+        msg = (
+            "مرحباً بك في مشروع مياة قرية بيت الأقرع الأهلي\n"
+            "بياناتك هي كالتالي:\n"
+            f"الرقم التسلسلي: {sub[1]}\n"
+            f"رقم المشترك (رقم العدّاد): {sub[2]}\n"
+            f"الإسم: {sub[3]}\n"
+            f"المنطقة: {sub[6] or '-'}\n"
+        )
         await update.message.reply_text(
-            "تم ربط حسابك كمشترك بنجاح.\nيمكنك الآن استخدام الأزرار أدناه.",
+            msg,
             reply_markup=subscriber_keyboard(),
         )
         user_data[STATE_KEY] = STATE_NONE
@@ -2351,7 +2313,15 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await subscriber_text_router(update, context, text, state)
 
 
-# ============ نقطة الدخول ============
+# ================== keep alive dummy ==================
+def keep_bot_alive():
+    # يمكنك تركها فارغة أو إضافة منطق بسيط
+    import time
+    while True:
+        time.sleep(60)
+
+
+# ================== main ==================
 def main():
     init_db()
 
