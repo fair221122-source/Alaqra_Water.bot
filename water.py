@@ -2123,7 +2123,7 @@ async def subscriber_text_router(
             "SUB_STMT_WAIT_TO",
             "اختر تاريخ النهاية لكشف الحساب:"
         )
-        context.user_data[STATE_KEY] = "SUB_STMT_WAIT_TO"
+
         return
 
     # حالة اختيار تاريخ النهاية لكشف المشترك
@@ -2190,7 +2190,7 @@ async def subscriber_text_router(
             "SUB_STMT_WAIT_FROM",
             "اختر تاريخ البداية لكشف الحساب:"
         )
-        context.user_data[STATE_KEY] = "SUB_STMT_WAIT_FROM"
+
         context.user_data["sub_stmt_id"] = sub[0]
         return
 
