@@ -19,15 +19,14 @@ from telegram.ext import (
     filters,
 )
 
+# مكتبة توليد ملفات PDF
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
 
-# ================== config ==================
 TOKEN = "8090667485:AAGCgIlZPEB069W_bhpIr0HBdp20GpfCCPI"
 DB_PATH = "water_project.db"
-ANNUAL_CLOSE_PASSWORD = "09092009"
-UNIT_PRICE_DEFAULT = 500  # سعر الوحدة الافتراضي
+ANNUAL_CLOSE_PASSWORD = "09092009"  # يمكنك تغييره
 
 # ================== keyboards ==================
 def admin_keyboard():
@@ -103,6 +102,7 @@ STATE_ADMIN_SUB_STATEMENT_WAIT_TO = "ADMIN_SUB_STATEMENT_WAIT_TO"
 STATE_ADMIN_ANNUAL_CONFIRM = "ADMIN_ANNUAL_CONFIRM"
 STATE_ADMIN_ANNUAL_PASSWORD = "ADMIN_ANNUAL_PASSWORD"
 
+# حالات اختيار التاريخ (سنة/شهر/يوم) عبر الأزرار
 STATE_DATE_PICK_TARGET = "DATE_PICK_TARGET"  # نستخدمه مع user_data["date_target_state"]
 
 
@@ -200,6 +200,7 @@ def init_db():
 
     conn.commit()
 
+    # إدخال المناطق الثابتة إن لم تكن موجودة
     areas = [
         "الحمراء",
         "الجبوبة",
@@ -418,7 +419,10 @@ def get_next_serial() -> int:
     return max_serial + 1
 
 
-# ================== readings & payments ==================
+# ============== readings & payments ==================
+UNIT_PRICE_DEFAULT = 500  # مثال
+
+
 def get_last_reading(sub_id: int) -> Optional[int]:
     conn = get_conn()
     c = conn.cursor()
@@ -626,7 +630,6 @@ def get_global_summary(from_date: date, to_date: date):
     return total_c, total_p, bal
 
 
-# ================== messages log ==================
 def log_message(msg_type: str, target: str, text: str):
     conn = get_conn()
     c = conn.cursor()
@@ -664,6 +667,7 @@ def generate_statement_pdf(
     x_margin = 20 * mm
     y = 250 * mm
 
+    # بيانات المشترك
     c.setFont("Helvetica", 10)
     c.drawString(x_margin, y, f"الاسم: {sub_row[3]}")
     y -= 6 * mm
@@ -674,6 +678,7 @@ def generate_statement_pdf(
     c.drawString(x_margin, y, f"المنطقة: {sub_row[6] or '-'}")
     y -= 10 * mm
 
+    # جدول القراءات
     c.setFont("Helvetica-Bold", 10)
     c.drawString(x_margin, y, "القراءات:")
     y -= 6 * mm
@@ -711,6 +716,7 @@ def generate_statement_pdf(
         c.drawString(x_margin, y, line)
         y -= 5 * mm
 
+    # ملخص
     summary = get_subscriber_summary(sub_row[0])
     y -= 8 * mm
     c.setFont("Helvetica-Bold", 10)
@@ -747,6 +753,7 @@ def generate_area_or_global_pdf(
     y = 250 * mm
     c.setFont("Helvetica", 9)
 
+    # رأس الجدول
     if is_global:
         header = "م | الاسم | رقم المشترك | المنطقة | المدفوع | المتأخرات"
     else:
@@ -798,6 +805,7 @@ def generate_area_or_global_pdf(
 
 
 def generate_annual_pdf(filename: str):
+    # تقرير بسيط سنوي
     today = datetime.utcnow().date()
     from_date = date(today.year, 1, 1)
     to_date = date(today.year, 12, 31)
@@ -915,10 +923,18 @@ async def start_date_pick(
 
     now = datetime.utcnow()
     kb = build_year_keyboard(now.year)
-    await update.message.reply_text(
-        prompt_text + "\nاختر السنة:",
-        reply_markup=kb,
-    )
+    # هنا نستخدم reply_text من message أو من chat_id إذا كان من callback
+    if update.message:
+        await update.message.reply_text(
+            prompt_text + "\nاختر السنة:",
+            reply_markup=kb,
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=prompt_text + "\nاختر السنة:",
+            reply_markup=kb,
+        )
 
 
 async def handle_date_pick_callback(
@@ -961,8 +977,9 @@ async def handle_date_pick_callback(
         d = date(year, month, day)
         target_state = user_data.get("date_target_state")
 
-        user_data[STATE_KEY] = target_state
+        # تنظيف حالة اختيار التاريخ
         user_data["picked_date"] = d
+        user_data[STATE_KEY] = target_state
 
         await query.edit_message_text(
             f"تم اختيار التاريخ: {d}",
@@ -1002,7 +1019,6 @@ async def handle_admin_sub_statement(update: Update, context: ContextTypes.DEFAU
             await update.message.reply_text("لم يتم اختيار تاريخ صحيح.")
             return
         user_data["stmt_from_date"] = d
-        await update.message.reply_text("الآن اختر تاريخ النهاية:")
         await start_date_pick(
             update,
             context,
@@ -1067,7 +1083,7 @@ async def handle_admin_sub_statement(update: Update, context: ContextTypes.DEFAU
         return
 
 
-# ================== admin text router (منقحة) ==================
+# ================== admin text router ==================
 async def admin_text_router(
     update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: str
 ):
@@ -1088,7 +1104,7 @@ async def admin_text_router(
         user_data[STATE_KEY] = STATE_NONE
         return
 
-    # ================== حالة عدم وجود عملية جارية ==================
+    # هنا نبدأ من حالة STATE_NONE للأوامر الرئيسية
     if state == STATE_NONE:
         if text == "مشترك جديد":
             serial = get_next_serial()
@@ -1194,7 +1210,6 @@ async def admin_text_router(
         )
         return
 
-    # ================== إنشاء مشترك جديد ==================
     if state == STATE_ADMIN_NEW_SUB_NAME:
         user_data["new_sub_name"] = text
         await update.message.reply_text(
@@ -1218,7 +1233,6 @@ async def admin_text_router(
         user_data[STATE_KEY] = STATE_ADMIN_NEW_SUB_AREA
         return
 
-    # ================== تعديل مشترك ==================
     if state == STATE_ADMIN_EDIT_SUB_WAIT_ACCOUNT:
         sub = find_subscriber_by_account(text)
         if not sub:
@@ -1259,7 +1273,6 @@ async def admin_text_router(
         user_data[STATE_KEY] = STATE_NONE
         return
 
-    # ================== تسجيل قراءة ==================
     if state == STATE_ADMIN_READ_WAIT_ACCOUNT:
         sub = find_subscriber_by_account(text)
         if not sub:
@@ -1314,7 +1327,6 @@ async def admin_text_router(
         user_data[STATE_KEY] = STATE_ADMIN_READ_CONFIRM
         return
 
-    # ================== تسجيل دفع ==================
     if state == STATE_ADMIN_PAY_WAIT_ACCOUNT:
         sub = find_subscriber_by_account(text)
         if not sub:
@@ -1359,7 +1371,6 @@ async def admin_text_router(
         user_data[STATE_KEY] = STATE_ADMIN_PAY_CONFIRM
         return
 
-    # ================== كشف مشترك ==================
     if state == STATE_ADMIN_INQ_WAIT_ACCOUNT:
         sub = find_subscriber_by_account(text)
         if not sub:
@@ -1382,14 +1393,12 @@ async def admin_text_router(
         user_data[STATE_KEY] = STATE_NONE
         return
 
-    # ================== كشف منطقة ==================
     if state == STATE_ADMIN_AREA_WAIT_FROM:
         d = user_data.get("picked_date")
         if not d:
             await update.message.reply_text("لم يتم اختيار تاريخ صحيح.")
             return
         user_data["area_from_date"] = d
-        await update.message.reply_text("الآن اختر تاريخ النهاية:")
         await start_date_pick(
             update,
             context,
@@ -1450,19 +1459,12 @@ async def admin_text_router(
             is_global=False,
         )
 
-        await update.message.reply_text(
-            msg,
-            reply_markup=InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "إرسال للمشتركين", callback_data=f"area_send_{area_id}"
-                        ),
-                        InlineKeyboardButton("تجاهل", callback_data="area_ignore"),
-                    ]
-                ]
-            ),
-        )
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("إرسال للمشتركين", callback_data=f"area_send_{area_id}"),
+                InlineKeyboardButton("تجاهل", callback_data="area_ignore"),
+            ]
+        ]))
         await update.message.reply_document(
             document=InputFile(filename, filename=os.path.basename(filename)),
             caption="ملف كشف المنطقة (PDF) - نسخة المدير.",
@@ -1471,14 +1473,12 @@ async def admin_text_router(
         user_data[STATE_KEY] = STATE_NONE
         return
 
-    # ================== كشف رئيسي ==================
     if state == STATE_ADMIN_MAIN_WAIT_FROM:
         d = user_data.get("picked_date")
         if not d:
             await update.message.reply_text("لم يتم اختيار تاريخ صحيح.")
             return
         user_data["main_from_date"] = d
-        await update.message.reply_text("الآن اختر تاريخ النهاية:")
         await start_date_pick(
             update,
             context,
@@ -1532,19 +1532,12 @@ async def admin_text_router(
             is_global=True,
         )
 
-        await update.message.reply_text(
-            msg,
-            reply_markup=InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "إرسال للجميع", callback_data="main_send_all"
-                        ),
-                        InlineKeyboardButton("تجاهل", callback_data="main_ignore"),
-                    ]
-                ]
-            ),
-        )
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("إرسال للجميع", callback_data="main_send_all"),
+                InlineKeyboardButton("تجاهل", callback_data="main_ignore"),
+            ]
+        ]))
         await update.message.reply_document(
             document=InputFile(filename, filename=os.path.basename(filename)),
             caption="ملف الكشف الرئيسي (PDF) - نسخة المدير.",
@@ -1553,7 +1546,6 @@ async def admin_text_router(
         user_data[STATE_KEY] = STATE_NONE
         return
 
-    # ================== نص الرسائل ==================
     if state == STATE_ADMIN_MSG_TEXT:
         msg_type = user_data.get("msg_type")
         text_msg = text
@@ -1626,7 +1618,6 @@ async def admin_text_router(
             user_data[STATE_KEY] = STATE_NONE
             return
 
-    # ================== كشف مشترك PDF ==================
     if state in (
         STATE_ADMIN_SUB_STATEMENT_WAIT_ACCOUNT,
         STATE_ADMIN_SUB_STATEMENT_WAIT_FROM,
@@ -1635,7 +1626,6 @@ async def admin_text_router(
         await handle_admin_sub_statement(update, context)
         return
 
-    # ================== كلمة سر الإغلاق السنوي ==================
     if state == STATE_ADMIN_ANNUAL_PASSWORD:
         if text != ANNUAL_CLOSE_PASSWORD:
             await update.message.reply_text(
@@ -1665,6 +1655,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = context.user_data
     state = user_data.get(STATE_KEY, STATE_NONE)
 
+    # أولاً: معالجة اختيار التاريخ إن وجد
     handled = await handle_date_pick_callback(update, context)
     if handled:
         return
@@ -2098,16 +2089,26 @@ async def msg_sub_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 async def text_handler_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = context.user_data
     state = user_data.get(STATE_KEY, STATE_NONE)
-    if is_admin(update) and state == STATE_ADMIN_MSG_SUB_WAIT:
-        await msg_sub_text_handler(update, context)
-    else:
-        await text_handler(update, context)
+    text = update.message.text.strip()
+
+    # مدير المشروع
+    if is_admin(update):
+        # حالة خاصة لاختيار مشترك بالاسم/الرقم للرسائل
+        if state == STATE_ADMIN_MSG_SUB_WAIT:
+            await msg_sub_text_handler(update, context)
+        else:
+            await admin_text_router(update, context, text, state)
+        return
+
+    # غير المدير → نستخدم text_handler العادي (مشترك)
+    await text_handler(update, context)
 
 
 # ================== subscriber side ==================
 async def subscriber_text_router(
     update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, state: str
 ):
+    # حالة اختيار تاريخ البداية لكشف المشترك
     if state == "SUB_STMT_WAIT_FROM":
         d = context.user_data.get("picked_date")
         if not d:
@@ -2125,6 +2126,7 @@ async def subscriber_text_router(
         context.user_data[STATE_KEY] = "SUB_STMT_WAIT_TO"
         return
 
+    # حالة اختيار تاريخ النهاية لكشف المشترك
     if state == "SUB_STMT_WAIT_TO":
         d = context.user_data.get("picked_date")
         if not d:
