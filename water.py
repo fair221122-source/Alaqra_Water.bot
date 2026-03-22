@@ -1,6 +1,12 @@
 # ================== imports & config ==================
 import os
 import sqlite3
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
+
 from datetime import datetime, date
 from typing import Optional, Tuple, List
 
@@ -29,9 +35,6 @@ DB_PATH = "water_project.db"
 ANNUAL_CLOSE_PASSWORD = "09092009"
 import os
 from dotenv import load_dotenv
-
-load_dotenv()
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 # ================== keyboards ==================
 def admin_keyboard():
