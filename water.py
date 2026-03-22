@@ -16,10 +16,10 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 
 # ================== CONFIG ==================
-TOKEN = "PUT_YOUR_BOT_TOKEN_HERE"
+TOKEN = "8090667485:AAGCgIlZPEB069W_bhpIr0HBdp20GpfCCPI"
 UNIT_PRICE = 500
 STATE_KEY = "state"
-ANNUAL_PASSWORD = "1234"
+ANNUAL_PASSWORD = "09092009"
 
 # ================== DATABASE ==================
 def get_conn():
