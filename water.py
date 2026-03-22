@@ -27,6 +27,11 @@ from reportlab.lib.units import mm
 TOKEN = "8090667485:AAGCgIlZPEB069W_bhpIr0HBdp20GpfCCPI"
 DB_PATH = "water_project.db"
 ANNUAL_CLOSE_PASSWORD = "09092009"
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 # ================== keyboards ==================
 def admin_keyboard():
